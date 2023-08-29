@@ -48,13 +48,18 @@ def select_data(df, num_profiles, start_index = 0):
     df = df.loc[start_index:start_index+num_profiles-1]
     df = df.reset_index(drop=True)
 
-def find_top_of_atmosphere(top_altitude,date,ecipos,ecivec):
-    s_120_2=findheight(date,ecipos,ecivec,top_altitude,bracket=(30e5,40e5)).x
-    return s_120_2
+def find_top_of_atmosphere(top_altitude,localR,ecipos,ecivec):
+    satellite_altitude = np.linalg.norm(ecipos)
+    angle_los_radius = np.arccos(np.dot(ecipos,ecivec)/satellite_altitude)
+    b = 2*satellite_altitude*np.cos(angle_los_radius)
+    root=np.sqrt(b**2+4*((top_altitude+localR)**2 - satellite_altitude**2))
+    s_120_1 =(-b-root)/2
+    s_120_2 =(-b+root)/2
+    
+    return [s_120_1,s_120_2]
 
-def generate_steps(stepsize,top_altitude=None,date=None,ecipos=None,ecivec=None):
-    #distance_top_of_atmosphere = find_top_of_atmosphere(top_altitude,date,ecipos,ecivec)
-    distance_top_of_atmosphere = np.array([1800e3,1800e3 + 2e6-4e5])
+def generate_steps(stepsize,top_altitude,localR,ecipos,ecivec):
+    distance_top_of_atmosphere = find_top_of_atmosphere(top_altitude,localR,ecipos,ecivec)
     steps = np.arange(distance_top_of_atmosphere[0], distance_top_of_atmosphere[1], stepsize)
     return steps
 
@@ -78,7 +83,7 @@ def generate_local_transform(df,timescale):
 
     return ecef_to_local
 
-def get_los_in_local_grid(df_row,icol,irow,stepsize,topalt,timescale, ecef_to_local):
+def get_los_in_local_grid(df_row,icol,irow,stepsize,top_altitude, timescale, ecef_to_local, localR=None):
 
     qp = R.from_quat(df_row['qprime'])
     satpos_eci = df_row['afsGnssStateJ2000'][0:3]
@@ -90,7 +95,10 @@ def get_los_in_local_grid(df_row,icol,irow,stepsize,topalt,timescale, ecef_to_lo
     x, y = pix_deg(df_row, icol, irow)
     los_sat = R.from_euler('xyz', [0, y, x], degrees=True).apply([1, 0, 0])
     los_eci = np.array(quat.apply(qp.apply(los_sat)))
-    s_steps = generate_steps(stepsize)
+    if localR == None:
+        localR = np.linalg.norm(sfapi.wgs84.latlon(df_row.TPlat, df_row.TPlon, elevation_m=0).at(current_ts).position.m)        
+
+    s_steps = generate_steps(stepsize,top_altitude=top_altitude,localR=localR,ecipos=satpos_eci,ecivec=los_eci)
 
     eci_to_ecef=R.from_matrix(itrs.rotation_at(current_ts))
     pos=np.expand_dims(satpos_eci, axis=0).T+s_steps*np.expand_dims(los_eci, axis=0).T
@@ -145,18 +153,18 @@ def generate_grid(df,timescale, ecef_to_local):
     nlon = 10
     nlat = 25
 
-    altitude_grid = np.arange(localR+50e3,localR+130e3,2e3)
-    altitude_grid[0] = altitude_grid[0]-30e3
-    altitude_grid[-1] = altitude_grid[-1]+30e3
-    acrosstrack_grid = np.arange(-0.1,0.1,0.01)
-    #acrosstrack_grid = np.linspace(posecef_i_sph[:,1].min(),posecef_i_sph[:,1].max(),1)
-    alongtrack_grid = np.linspace(poslocal_sph[:,2].min()-0.5,poslocal_sph[:,2].max()+0.5,50)
-    alongtrack_grid[0] = alongtrack_grid[0]-0.5
-    alongtrack_grid[-1] = alongtrack_grid[-1]+0.5
+    # altitude_grid = np.arange(localR+50e3,localR+130e3,2e3)
+    # altitude_grid[0] = altitude_grid[0]-30e3
+    # altitude_grid[-1] = altitude_grid[-1]+30e3
+    # acrosstrack_grid = np.arange(-0.1,0.1,0.01)
+    # #acrosstrack_grid = np.linspace(posecef_i_sph[:,1].min(),posecef_i_sph[:,1].max(),1)
+    # alongtrack_grid = np.linspace(poslocal_sph[:,2].min()-0.5,poslocal_sph[:,2].max()+0.5,50)
+    # alongtrack_grid[0] = alongtrack_grid[0]-0.5
+    # alongtrack_grid[-1] = alongtrack_grid[-1]+0.5
 
-    # altitude_grid = np.arange(min_alt-5e3,localR+top_alt+5e3,dz)
-    # acrosstrack_grid = np.linspace(min_lon,max_lon,nlon)
-    # alongtrack_grid = np.linspace(min_lat,max_lat,nlat)
+    altitude_grid = np.arange(min_alt-5e3,localR+top_alt+5e3,dz)
+    acrosstrack_grid = np.linspace(min_lon,max_lon,nlon)
+    alongtrack_grid = np.linspace(min_lat,max_lat,nlat)
 
     return altitude_grid,acrosstrack_grid,alongtrack_grid
 
@@ -188,11 +196,13 @@ def calc_jacobian(df,columns,rows):
     k_row = 0
     for i in range(len(df)):
         print("image number: " + str(i))
+        current_ts = timescale.from_datetime(df['EXPDate'][i])
+        localR = np.linalg.norm(sfapi.wgs84.latlon(df.loc[i].TPlat, df.loc[i].TPlon, elevation_m=0).at(current_ts).position.m)        
         for column in columns:
             p = prepare_profile(df.iloc[i],column,rows)
             profiles.append(p)
             for irow in rows:
-                posecef_i_sph = get_los_in_local_grid(df.loc[i],column,irow,stepsize,top_alt,timescale,ecef_to_local)
+                posecef_i_sph = get_los_in_local_grid(df.loc[i],column,irow,stepsize,top_alt,timescale,ecef_to_local,localR=localR)
                 hist, _ = np.histogramdd(posecef_i_sph[::1,:],bins=edges)
                 k = hist.reshape(-1)
                 ks[k_row,:] = k

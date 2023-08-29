@@ -46,7 +46,8 @@ def reinsert_zeros(vector, indexes):
 #     return x_hat
 
 def do_inversion(k,y):
-    k_reduced,empty_cols,filled_cols = remove_empty_columns(k)    
+    #k_reduced,empty_cols,filled_cols = remove_empty_columns(k)    
+    k_reduced = k.tocsc()
     xa=np.ones([k_reduced.shape[1]])
     Sa_inv=sp.diags(np.ones([xa.shape[0]]),0).astype('float32') * (1/np.max(y)) * 1e8
     Se_inv=sp.diags(np.ones([k_reduced.shape[0]]),0).astype('float32') * (1/np.max(y))
@@ -56,9 +57,9 @@ def do_inversion(k,y):
     #%%
     start_time = time.time()
     x_hat = oem.oem_basic_sparse_2(y, k_reduced, xa, Se_inv, Sa_inv, maxiter=1000)
-    x_hat_old = x_hat
-    x_hat = np.zeros([k.shape[1],1])
-    x_hat[filled_cols] = x_hat_old
+    #x_hat_old = x_hat
+    #x_hat = np.zeros([k.shape[1],1])
+    #x_hat[filled_cols] = x_hat_old
 
 
     end_time = time.time()

@@ -32,6 +32,3 @@ filename = "jacobian_3.pkl"
 with open(filename, "wb") as file:
     pickle.dump((y, ks, altitude_grid, alongtrack_grid,acrosstrack_grid, ecef_to_local), file)
 
-with open(filename, "rb") as file:
-    [y, ks, altitude_grid, alongtrack_grid,acrosstrack_grid, ecef_to_local] = pickle.load(file)
-

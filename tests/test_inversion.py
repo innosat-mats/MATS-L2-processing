@@ -48,3 +48,4 @@ plt.show()
 #%%
 plt.pcolor(np.sum(x_hat_reshape1[:,:,:],axis=2))
 plt.show()
+# %%
