@@ -55,3 +55,7 @@ def localgrid_to_lat_lon_alt_3D(ecef_to_local,altitude_grid,acrosstrack_grid,alo
                 non_uniform_ecef_grid_altitude[i,j,k] = non_uniform_ecef_grid_r[i,j,k]-geoid_radius(non_uniform_ecef_grid_lat[i,j,k])
 
     return non_uniform_ecef_grid_altitude,non_uniform_ecef_grid_lat,non_uniform_ecef_grid_lon,non_uniform_ecef_grid_r
+
+
+def center_grid(grid):
+   return (grid[:-1]+grid[1:])/2
