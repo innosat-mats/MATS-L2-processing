@@ -9,7 +9,7 @@ import scipy.sparse as sp
 from skyfield import api as sfapi
 from skyfield.framelib import itrs
 import pickle
-
+from mats_l2_processing.grids import cart2sph
 # %%
 
 # %%
@@ -30,17 +30,6 @@ def prepare_profile(ch,col=None,row=None):
 
 def eci_to_ecef_transform(timescale,date):
     return R.from_matrix(itrs.rotation_at(timescale.from_datetime(date)))
-
-def cart2sph(pos):
-    x = pos[:,0]
-    y = pos[:,1]
-    z = pos[:,2]
-    radius = np.sqrt(x**2 + y**2 + z**2)
-    longitude = np.arctan2(y, x)
-    latitude = np.arcsin(z / radius)
-
-    return np.array([radius,longitude,latitude]).T
-
 
 def select_data(df, num_profiles, start_index = 0):
     if num_profiles + start_index > len(df):

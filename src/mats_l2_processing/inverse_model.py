@@ -67,35 +67,3 @@ def do_inversion(k,y):
     print(f"Elapsed time: {elapsed_time} seconds")
 
     return x_hat
-
-
-# # %%
-# plt.plot(y)
-# plt.plot(k_reduced.dot(x_hat),':')
-# plt.show()
-# # %%
-# x_hat_old = x_hat
-# x_hat = np.zeros([k.shape[1],1])
-# x_hat[filled_cols] = x_hat_old
-
-# # %%
-# x_hat_reshape1 = np.array(x_hat).reshape(len(edges[0])-1
-# ,len(edges[1])-1
-# ,len(edges[2])-1)
-# plt.plot(x_hat_reshape1[:,3,:])
-# plt.show()
-
-# #%%
-
-# rs = ((edges[0][0:-1]+edges[0][1:])/2)
-# lons = (edges[1][0:-1]+edges[1][1:])/2
-# lats = (edges[2][0:-1]+edges[2][1:])/2
-
-# #%%
-# filename = "/home/olemar/Projects/Universitetet/MATS/MATS-analysis/Donal/retrievals/ecef_to_local.pkl"
-# with open(filename, "rb") as file:
-#     ecef_to_local = pickle.load(file)
-
-# #%%
-# ret_ecef=ecef_to_local.inv().apply(np.array([rs[0]*np.cos(lats),np.zeros(len(lats)),rs[0]*np.sin(lats)]).T)# %%
-# ret_lats=np.rad2deg(cart2sph(ret_ecef)[:,2])
