@@ -36,7 +36,7 @@ def cart2sph(pos):
     return np.array([radius,longitude,latitude]).T
 
 
-def localgrid_to_lat_lon_alt_3D(ecef_to_local,altitude_grid,acrosstrack_grid,alongtrack_grid):
+def localgrid_to_lat_lon_alt_3D(altitude_grid,acrosstrack_grid,alongtrack_grid,ecef_to_local):
     arrayshape = (len(altitude_grid),len(acrosstrack_grid),len(alongtrack_grid))
     non_uniform_ecef_grid_x = np.zeros(arrayshape)
     non_uniform_ecef_grid_y = np.zeros(arrayshape)
@@ -51,7 +51,7 @@ def localgrid_to_lat_lon_alt_3D(ecef_to_local,altitude_grid,acrosstrack_grid,alo
         for j in range(arrayshape[1]):
             for k in range(arrayshape[2]):
                 non_uniform_ecef_grid_x[i,j,k],non_uniform_ecef_grid_y[i,j,k],non_uniform_ecef_grid_z[i,j,k]=ecef_to_local.inv().apply(sph2cart(altitude_grid[i],acrosstrack_grid[j],alongtrack_grid[k]))
-                non_uniform_ecef_grid_r[i,j,k],non_uniform_ecef_grid_lon[i,j,k],non_uniform_ecef_grid_lat[i,j,k] = cart2sph(non_uniform_ecef_grid_x[i,j,k],non_uniform_ecef_grid_y[i,j,k],non_uniform_ecef_grid_z[i,j,k])
+                non_uniform_ecef_grid_r[i,j,k],non_uniform_ecef_grid_lon[i,j,k],non_uniform_ecef_grid_lat[i,j,k] = cart2sph([non_uniform_ecef_grid_x[i,j,k],non_uniform_ecef_grid_y[i,j,k],non_uniform_ecef_grid_z[i,j,k]])
                 non_uniform_ecef_grid_altitude[i,j,k] = non_uniform_ecef_grid_r[i,j,k]-geoid_radius(non_uniform_ecef_grid_lat[i,j,k])
 
     return non_uniform_ecef_grid_altitude,non_uniform_ecef_grid_lat,non_uniform_ecef_grid_lon,non_uniform_ecef_grid_r
