@@ -1,4 +1,5 @@
 import numpy as np
+from numba import jit
 
 def geoid_radius(latitude):
     '''
@@ -25,10 +26,8 @@ def sph2cart(r, phi, theta):
     z = r * np.cos(theta)
     return x, y, z
 
+@jit(nopython=True,cache=True)
 def cart2sph(pos):
-    if len(pos.shape) == 1:
-        pos = pos[np.newaxis, : ]
-
     x = pos[:,0]
     y = pos[:,1]
     z = pos[:,2]
@@ -36,7 +35,7 @@ def cart2sph(pos):
     longitude = np.arctan2(y, x)
     latitude = np.arcsin(z / radius)
 
-    return np.array([radius,longitude,latitude]).T
+    return radius,longitude,latitude
 
 
 def localgrid_to_lat_lon_alt_3D(altitude_grid,acrosstrack_grid,alongtrack_grid,ecef_to_local):
@@ -55,6 +54,7 @@ def localgrid_to_lat_lon_alt_3D(altitude_grid,acrosstrack_grid,alongtrack_grid,e
             for k in range(arrayshape[2]):
                 non_uniform_ecef_grid_x[i,j,k],non_uniform_ecef_grid_y[i,j,k],non_uniform_ecef_grid_z[i,j,k]=ecef_to_local.inv().apply(sph2cart(altitude_grid[i],acrosstrack_grid[j],alongtrack_grid[k]))
                 ecef_r_lat_lon = cart2sph(np.array([non_uniform_ecef_grid_x[i,j,k],non_uniform_ecef_grid_y[i,j,k],non_uniform_ecef_grid_z[i,j,k]]).T)[0,:]
+                ecef_r_lat_lon = np.array(ecef_r_lat_lon).T
                 non_uniform_ecef_grid_r[i,j,k] = ecef_r_lat_lon[0]
                 non_uniform_ecef_grid_lon[i,j,k] = ecef_r_lat_lon[1]
                 non_uniform_ecef_grid_lat[i,j,k] = ecef_r_lat_lon[2]

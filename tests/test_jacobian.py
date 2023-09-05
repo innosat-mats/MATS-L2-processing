@@ -20,7 +20,7 @@ df = dftop[dftop['channel'] == 'IR2'].dropna().reset_index(drop=True)#[0:10]
 
 #select part of orbit
 offset = 300
-num_profiles = 100 #use 50 profiles for inversion
+num_profiles = 10 #use 50 profiles for inversion
 df = df.loc[offset:offset+num_profiles-1]
 df = df.reset_index(drop=True)
 columns = np.arange(0,df["NCOL"][0],2)

@@ -10,6 +10,8 @@ from skyfield import api as sfapi
 from skyfield.framelib import itrs
 import pickle
 from mats_l2_processing.grids import cart2sph
+from fast_histogram import histogramdd
+
 # %%
 
 # %%
@@ -120,6 +122,7 @@ def get_los_in_local_grid(df_row,icol,irow,stepsize,top_altitude, ecef_to_local,
     posecef=(eci_to_ecef.apply(pos.T).astype('float32'))
     poslocal = ecef_to_local.apply(posecef) #convert to local
     poslocal_sph = cart2sph(poslocal)   #x: height, y: acrosstrac (angle), z: along track (angle)
+    poslocal_sph = np.array(poslocal_sph).T
 
     return poslocal_sph
 
@@ -165,7 +168,7 @@ def generate_grid(df, ecef_to_local):
     max_lon = poslocal_sph[:,1].max()
     min_lon = poslocal_sph[:,1].min()
 
-    dz = 1e3
+    nalt = 50
     nlon = 10
     nlat = 25
 
@@ -178,7 +181,7 @@ def generate_grid(df, ecef_to_local):
     # alongtrack_grid[0] = alongtrack_grid[0]-0.5
     # alongtrack_grid[-1] = alongtrack_grid[-1]+0.5
 
-    altitude_grid = np.arange(min_alt-5e3,localR+top_alt+5e3,dz)
+    altitude_grid = np.linspace(min_alt-5e3,localR+top_alt+5e3,nalt)
     acrosstrack_grid = np.linspace(min_lon,max_lon,nlon)
     alongtrack_grid = np.linspace(min_lat,max_lat,nlat)
 
@@ -226,7 +229,8 @@ def calc_jacobian(df,columns,rows,edges=None):
             profiles.append(profile)
             for irow in rows:
                 posecef_i_sph = get_los_in_local_grid(df.loc[i],column,irow,stepsize,top_alt,ecef_to_local,localR=localR)
-                hist, _ = np.histogramdd(posecef_i_sph[::1,:],bins=edges)
+                hist = histogramdd(posecef_i_sph[::1,:],range=[[edges[0][0],edges[0][-1]],[edges[1][0],edges[1][-1]],
+                    [edges[2][0],edges[2][-1]]], bins=[len(edges[0])-1,len(edges[1])-1,len(edges[2])-1])
                 k = hist.reshape(-1)
                 K[k_row,:] = k
                 k_row = k_row+1
