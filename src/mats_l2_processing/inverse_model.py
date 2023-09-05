@@ -19,41 +19,26 @@ import scipy.sparse as sp
 import time
 
 
-def remove_empty_columns(matrix):
+def do_inversion(k, y, Sa_inv=None, Se_inv=None, xa=None):
+    """Do inversion
 
-    _,I = np.nonzero(np.sum(matrix,0))
-    _,I_0 = np.where(np.sum(matrix,0)==0)
-    cleaned_matrix = matrix[:,I]
+    Detailed description
 
-    return cleaned_matrix, I_0,I
+    Args:
+        k: 
+        y
 
-def reinsert_zeros(vector, indexes):
-    for idx in indexes:
-        vector.insert(idx, 0)
-
-# def get_3d_field(k, edges, profiles, SeDiag, xa, Sadiag):
-
-#     y = profiles.reshape(-1)
-#     y = np.matrix(y).T
-
-#     xa = np.matrix(xa).T
-
-#     Sa_inv=sp.diags(np.ones([xa.shape[0]]),0).astype('float32') * (1/np.max(y)) * 1e8
-#     Se_inv=sp.diags(np.ones([k_reduced.shape[0]]),0).astype('float32') * (1/np.max(y))
-
-#     x_hat = oem.oem_basic_sparse_2(y, k_reduced, xa, Se_inv, Sa_inv, maxiter=1000)
-
-#     return x_hat
-
-def do_inversion(k,y):
-    #k_reduced,empty_cols,filled_cols = remove_empty_columns(k)    
+    Returns:
+        ad
+    """
     k_reduced = k.tocsc()
-    xa=np.ones([k_reduced.shape[1]])
-    Sa_inv=sp.diags(np.ones([xa.shape[0]]),0).astype('float32') * (1/np.max(y)) * 1e8
-    Se_inv=sp.diags(np.ones([k_reduced.shape[0]]),0).astype('float32') * (1/np.max(y))
-    xa=0*xa
-    xa = np.matrix(xa).T
-    y = np.matrix(y).T
+    if xa == None:
+        xa=np.ones([k_reduced.shape[1]])
+        xa=0*xa
+    if Sa_inv == None:
+        Sa_inv=sp.diags(np.ones([xa.shape[0]]),0).astype('float32') * (1/np.max(y)) * 1e8
+    if Se_inv == None: 
+        Se_inv=sp.diags(np.ones([k_reduced.shape[0]]),0).astype('float32') * (1/np.max(y))
     #%%
     start_time = time.time()
     x_hat = oem.oem_basic_sparse_2(y, k_reduced, xa, Se_inv, Sa_inv, maxiter=1000)

@@ -12,17 +12,15 @@ with open(filename, "rb") as file:
 altitude_grid_ref = np.load("/home/olemar/Projects/Universitetet/MATS/MATS-L2-processing/edges0.npy")
 alongtrack_grid_ref = np.load("/home/olemar/Projects/Universitetet/MATS/MATS-L2-processing/edges1.npy")
 acrosstrack_grid_ref = np.load("/home/olemar/Projects/Universitetet/MATS/MATS-L2-processing/edges2.npy")
-y = y.reshape(-1)
-y = np.matrix(y)
-
+y = y.flatten()
 x_hat = do_inversion(ks,y)
-
+#%%
 plt.plot(x_hat)
 plt.show()
-
+#%%
 
 plt.plot(ks.dot(x_hat)[::10])
-plt.plot(y[:,::10].T,'r--')
+plt.plot(y[::10].T,'r--')
 plt.show()
 
 #%%
