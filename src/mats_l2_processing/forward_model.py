@@ -161,12 +161,12 @@ def generate_grid(df, ecef_to_local):
     poslocal_sph.append(get_los_in_local_grid(df.loc[last],mid_col,irow,stepsize,top_alt,ecef_to_local))
 
     poslocal_sph = np.vstack(poslocal_sph)
-    max_alt = poslocal_sph[:,0].max()
-    min_alt = poslocal_sph[:,0].min()
-    max_lat = poslocal_sph[:,2].max()
-    min_lat = poslocal_sph[:,2].min()
-    max_lon = poslocal_sph[:,1].max()
-    min_lon = poslocal_sph[:,1].min()
+    max_rad = poslocal_sph[:,0].max()
+    min_rad = poslocal_sph[:,0].min()
+    max_along = poslocal_sph[:,2].max()
+    min_along = poslocal_sph[:,2].min()
+    max_across = poslocal_sph[:,1].max()
+    min_across = poslocal_sph[:,1].min()
 
     nalt = 50
     nlon = 10
@@ -181,9 +181,9 @@ def generate_grid(df, ecef_to_local):
     # alongtrack_grid[0] = alongtrack_grid[0]-0.5
     # alongtrack_grid[-1] = alongtrack_grid[-1]+0.5
 
-    altitude_grid = np.linspace(min_alt-5e3,localR+top_alt+5e3,nalt)
-    acrosstrack_grid = np.linspace(min_lon,max_lon,nlon)
-    alongtrack_grid = np.linspace(min_lat,max_lat,nlat)
+    altitude_grid = np.linspace(min_rad-5e3,localR+top_alt+5e3,nalt)
+    acrosstrack_grid = np.linspace(min_across,max_across,nlon)
+    alongtrack_grid = np.linspace(min_along,max_along,nlat)
 
     return altitude_grid,acrosstrack_grid,alongtrack_grid
 
