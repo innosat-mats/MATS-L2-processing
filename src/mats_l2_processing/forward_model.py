@@ -168,9 +168,9 @@ def generate_grid(df, ecef_to_local):
     max_across = poslocal_sph[:,1].max()
     min_across = poslocal_sph[:,1].min()
 
-    nalt = 50
-    nlon = 10
-    nlat = 25
+    nalt = 60
+    nlon = 20
+    nlat = 100
 
     # altitude_grid = np.arange(localR+50e3,localR+130e3,2e3)
     # altitude_grid[0] = altitude_grid[0]-30e3
