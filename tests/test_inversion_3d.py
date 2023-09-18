@@ -5,8 +5,9 @@ import numpy as np
 from matplotlib import pyplot as plt
 from mats_l2_processing.grids import localgrid_to_lat_lon_alt_3D, center_grid, geoid_radius
 from scipy.interpolate import griddata
+import time 
 
-filename = "/home/olemar/Projects/Universitetet/MATS/MATS-L2-processing/jacobian_3.pkl"
+filename = "/home/olemar/Projects/Universitetet/MATS/MATS-L2-processing/jacobian_3d.pkl"
 
 with open(filename, "rb") as file:
     [y, ks, altitude_grid_edges, alongtrack_grid_edges,acrosstrack_grid_edges, ecef_to_local] = pickle.load(file)
@@ -20,7 +21,12 @@ non_uniform_ecef_grid_altitude,non_uniform_ecef_grid_lon,non_uniform_ecef_grid_l
 
 xa = generate_xa_from_gaussian(non_uniform_ecef_grid_altitude)*2e12+1e11
 y = y.flatten()
+
+tic = time.time()
 x_hat = do_inversion(ks,y,xa=xa)
+toc = time.time()
+
+print(toc-tic)
 #%%
 plt.plot(x_hat)
 plt.plot(xa,'r--')
