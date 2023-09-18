@@ -1,23 +1,15 @@
 import numpy as np
-import pandas as pd
-from datetime import datetime, timezone
-from mats_utils.rawdata.read_data import read_MATS_data
-from mats_utils.geolocation.coordinates import col_heights, satpos
-from mats_l1_processing.pointing import pix_deg
-import matplotlib.pylab as plt
-from scipy.spatial.transform import Rotation as R
-from scipy.interpolate import CubicSpline
-from skyfield import api as sfapi
-from skyfield.framelib import itrs
-from skyfield.positionlib import Geocentric, ICRF
-from skyfield.units import Distance
-import xarray as xr
-from numpy.linalg import inv
 import mats_l2_processing.oem as oem
-import pickle
 import scipy.sparse as sp
 import time
+from mats_l2_processing.grids import geoid_radius
+from scipy import stats
 
+
+def generate_xa_from_gaussian(altgrid,width=5000,meanheight=90000):
+    xa= np.exp(-1/2*(altgrid-meanheight)**2/width**2)
+
+    return xa.flatten()
 
 def do_inversion(k, y, Sa_inv=None, Se_inv=None, xa=None):
     """Do inversion
@@ -32,11 +24,11 @@ def do_inversion(k, y, Sa_inv=None, Se_inv=None, xa=None):
         ad
     """
     k_reduced = k.tocsc()
-    if xa == None:
+    if xa is None:
         xa=np.ones([k_reduced.shape[1]])
         xa=0*xa
     if Sa_inv == None:
-        Sa_inv=sp.diags(np.ones([xa.shape[0]]),0).astype('float32') * (1/np.max(y)) * 1e8
+        Sa_inv=sp.diags(np.ones([xa.shape[0]]),0).astype('float32') * (1/np.max(y)) * 1e6
     if Se_inv == None: 
         Se_inv=sp.diags(np.ones([k_reduced.shape[0]]),0).astype('float32') * (1/np.max(y))
     #%%
