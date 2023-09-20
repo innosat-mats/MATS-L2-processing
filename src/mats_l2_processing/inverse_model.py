@@ -11,7 +11,7 @@ def generate_xa_from_gaussian(altgrid,width=5000,meanheight=90000):
 
     return xa.flatten()
 
-def do_inversion(k, y, Sa_inv=None, Se_inv=None, xa=None):
+def do_inversion(k, y, Sa_inv=None, Se_inv=None, xa=None, method='spsolve'):
     """Do inversion
 
     Detailed description
@@ -33,7 +33,7 @@ def do_inversion(k, y, Sa_inv=None, Se_inv=None, xa=None):
         Se_inv=sp.diags(np.ones([k_reduced.shape[0]]),0).astype('float32') * (1/np.max(y))
     #%%
     start_time = time.time()
-    x_hat = oem.oem_basic_sparse_2(y, k_reduced, xa, Se_inv, Sa_inv, maxiter=1000)
+    x_hat = oem.oem_basic_sparse_2(y, k_reduced, xa, Se_inv, Sa_inv, maxiter=1000,method=method)
     #x_hat_old = x_hat
     #x_hat = np.zeros([k.shape[1],1])
     #x_hat[filled_cols] = x_hat_old
