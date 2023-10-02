@@ -11,6 +11,9 @@ import scipy.sparse as sp
 from mats_l2_processing.grids import sph2cart, geoid_radius
 
 EARTH_RADIUS = 6371000
+KM_GRID = [[(0, 70, 2), (70, 80, 1), (80, 105, 0.5), (105, 120, 1), (120, 200, 2)],
+           [(700, -300, 50), (-300, -240, 30), (-240, 240, 20), (240, 300, 30), (300, 700, 50)],
+           200]
 
 
 def get_args():
@@ -29,12 +32,15 @@ def get_args():
     parser.add_argument("--stop_time", type=int, nargs=5, default=[2023, 3, 31, 22, 35],
                         help="Start time for data set.")
     parser.add_argument("--nprofiles", type=int, default=50, help="Number of profiles to get.")
+    parser.add_argument("--processes", type=int, default=4, 
+                        help="Number of images to process in parallel for jacobian calculation.")
 
     parser.add_argument("--apr_peak_val", type=float, default=3.2e12, help="A priori VER value at peak")
     parser.add_argument("--apr_peak_alt", type=float, default=93000, help="A priori VER peak altitude.")
     parser.add_argument("--apr_peak_width", type=float, default=3700, help="A priori VER peak width.")
-    parser.add_argument("--Sa_weights", type=float, nargs=4, default=[1, 500, 20000, 20000],
-                        help="Tikhonov regularisation weights.")
+    parser.add_argument("--Sa_weights", type=float, nargs=5, default=[1, 500, 20000, 20000, 5e5],
+                        help="Tikhonov regularisation weights: [<0-order>, <1-order diff., alt>," +
+                        "<1-order diff., across>, <1-order diff., along>, <laplacian>]")
     parser.add_argument("--offset", type=int, default=300, help="Profile selection offset")
     parser.add_argument("--reg_analysis", action="store_true",
                         help="Store xa and calculate additional regularisation parameters")
@@ -50,14 +56,33 @@ def get_data(args):
     return dftop
 
 
+def make_grid_proto(proto, offset=0.0, scaling=1.0):
+    if (type(proto) is int) or (type(proto) is float):
+        return int(proto)
+    assert type(proto) is list, "Malformed grid specification!"
+    for i, interval in enumerate(proto):
+        assert type(interval) is tuple, "Malformed grid specification!"
+        assert len(interval) == 3, "Malformed grid specification!"
+        if i == 0:
+            res = np.arange(*interval)
+        else:
+            res = np.concatenate((res, np.arange(*interval)))
+    return res * scaling + offset
+
+
 def get_jacobian(args, dftop):
     df = dftop[dftop['channel'] == 'IR2'].dropna().reset_index(drop=True)
     df = df.loc[args.offset:args.offset + args.nprofiles - 1]
     df = df.reset_index(drop=True)
     columns = np.arange(0, df["NCOL"][0], 2)
     rows = np.arange(0, df["NROW"][0] - 10, 1)
+    grid_proto = [make_grid_proto(KM_GRID[0], scaling=1e3,
+                                  offset=geoid_radius(np.deg2rad(np.mean(df['TPlat'])))),
+                  make_grid_proto(KM_GRID[1], scaling=1e3 / EARTH_RADIUS),
+                  make_grid_proto(KM_GRID[2], scaling=1e3 / EARTH_RADIUS)]
 
-    y, ks, altitude_grid, alongtrack_grid, acrosstrack_grid, ecef_to_local = calc_jacobian(df, columns, rows)
+    y, ks, altitude_grid, alongtrack_grid, acrosstrack_grid, ecef_to_local =\
+            calc_jacobian(df, columns, rows, grid_proto=grid_proto, processes=args.processes)
     with open(args.jacobian, "wb") as file:
         pickle.dump((y, ks, altitude_grid, alongtrack_grid, acrosstrack_grid, ecef_to_local), file)
     return (y, ks, altitude_grid, alongtrack_grid, acrosstrack_grid, ecef_to_local)
@@ -73,7 +98,8 @@ def invert(args, jacobian):
                                                                 meanheight=args.apr_peak_alt)
     Sa_inv, terms = mats_inv.Sa_inv_tikhonov((altitude_grid, acrosstrack_grid * EARTH_RADIUS,
                                               alongtrack_grid * EARTH_RADIUS), args.Sa_weights[0],
-                                             args.Sa_weights[1:], store_terms=args.reg_analysis)
+                                             diff_weights=args.Sa_weights[1:4], laplacian_weight=args.Sa_weights[4],
+                                             store_terms=args.reg_analysis, volume_factors=True)
     Sa_inv *= (1 / np.max(y)) * 1e6
     Se_inv = sp.diags(np.ones([ks.shape[0]]), 0).astype('float32') * (1 / np.max(y))
 
@@ -84,12 +110,9 @@ def invert(args, jacobian):
 
     if args.reg_analysis:
         residual = x_hat - xa.T
-        contribs = [residual.T @ term @ residual for term in terms]
         print("Regularisation contributions to misfit:")
-        print(f"Zero-order:            {contribs[0]:.1e}")
-        print(f"Altitude gradient:     {contribs[1]:.1e}")
-        print(f"Across-track gradient: {contribs[2]:.1e}")
-        print(f"Along-track gradient:  {contribs[3]:.1e}")
+        for name, matrix in terms.items():
+            print(f"{name}: {residual.T @ matrix @ residual:.1e}")
 
         with open("xa.pkl", "wb") as file:
             pickle.dump((xa.reshape(len(altitude_grid), len(acrosstrack_grid), len(alongtrack_grid)),

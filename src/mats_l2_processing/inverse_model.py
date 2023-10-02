@@ -28,7 +28,7 @@ def tikhonov_diff_op(shape, axis, axis_grid, volume_factors=None):
     Args:
     shape - spatial grid shape for which operator is to by created;
     axis - number axis along which the operator is meant to differentiate;
-    axis_grid - spatial grid coordinate values along that axis (1-D ndarray). Must be monotonic.
+    axis_grid - spatial grid coordinate values along that axis (1-D ndarray, must be monotonic);
     volume_factors - this is needed for proper scaling of Sa_inv components in case of
                      irregular grid spacing.
 
@@ -51,10 +51,45 @@ def tikhonov_diff_op(shape, axis, axis_grid, volume_factors=None):
     if volume_factors is not None:
         scalings *= volume_factors
 
-    return sp.diags(-scalings, offsets=0, dtype='float32') + sp.diags(scalings[:-step], offsets=step, dtype='float32')
+    # return sp.diags(-scalings, offsets=0, dtype='float32') + sp.diags(scalings[:-step], offsets=step, dtype='float32')
+    return sp.diags([-scalings, scalings], offsets=[0, step], dtype='float32')
 
 
-def Sa_inv_tikhonov(grid, weight_0, diff_weights, volume_factors=False, store_terms=False):
+def tikhonov_laplacian_op(grids, volume_factors):
+    """
+    Creates a sparse matrix operator that implements the Laplacian.
+
+    Args:
+    grids - tuple of 1-D ndarrays, grids along each axis (works with general rectilinear grid)
+
+    Returns:
+    L - sparse matrix (grid size x grid size).
+    """
+    shape = np.array([len(grid) for grid in grids])
+    size = np.prod(shape)
+    L = sp.dia_array((size, size), dtype='float32')
+
+    for axis, grid in enumerate(grids):
+        step = 1
+        for i in range(axis + 1, len(shape)):
+            step *= shape[i]
+        steps_up, steps_down, diag_main, diag_up, diag_down = (np.zeros_like(grid) for _ in range(5))
+        steps_up[:-1] = grid[1:] - grid[:-1]
+        steps_down[1:] = steps_up[:-1].copy()
+        diag_main[1:-1] = - 2.0 / steps_up[1:-1] / steps_down[1:-1]
+        diag_up[1:-1] = 2.0 / steps_up[1:-1] / (steps_up[1:-1] + steps_down[1:-1])
+        diag_down[1:-1] = 2.0 / steps_down[1:-1] / (steps_up[1:-1] + steps_down[1:-1])
+        diag_main, diag_up, diag_down = [expand_to_shape(arr, shape, axis).flatten()
+                                         for arr in [diag_main, diag_up, diag_down]]
+        if volume_factors is not None:
+            diag_main, diag_up, diag_down = [arr * volume_factors
+                                             for arr in [diag_main, diag_up, diag_down]]
+        L += sp.diags([diag_down[step:], diag_main, diag_up[:-step]], offsets=[-step, 0, step], dtype='float32')
+    return L
+
+
+def Sa_inv_tikhonov(grid, weight_0, diff_weights=[0.0, 0.0, 0.0], laplacian_weight=0.0,
+                    volume_factors=False, store_terms=False):
     """
     Creates Sa_inv for Tikhonov regularisation on general rectilinear grid.
     In n dimentions (i.e. len(grid) == n):
@@ -91,14 +126,26 @@ def Sa_inv_tikhonov(grid, weight_0, diff_weights, volume_factors=False, store_te
     diagonal = diagonal.flatten()
 
     Sa_inv = sp.diags((diagonal * weight_0) ** 2).astype('float32')
-    terms = [Sa_inv.copy()] if store_terms else []
+    terms = {"Zero-order": Sa_inv.copy()} if store_terms else {}
 
+    names = ["Altitude gradient", "Across-track gradient", "Along-track gradient"]
     for i, g_i in enumerate(grid):
+        if diff_weights[i] == 0:
+            continue
         L_i = tikhonov_diff_op(shape, i, g_i, volume_factors=(diagonal if volume_factors else None))
         term = diff_weights[i] ** 2 * (L_i.T @ L_i)
         Sa_inv += term
         if store_terms:
-            terms.append(term)
+            terms[names[i]] = term.copy()
+    del L_i
+
+    if laplacian_weight != 0:
+        L = tikhonov_laplacian_op(grid, volume_factors=(diagonal if volume_factors else None))
+        term = laplacian_weight ** 2 * (L.T @ L)
+        Sa_inv += term
+        if store_terms:
+            terms["Laplacian"] = term.copy()
+
     return Sa_inv, terms
 
 
@@ -128,7 +175,6 @@ def do_inversion(k, y, Sa_inv=None, Se_inv=None, xa=None, method='spsolve'):
     #x_hat_old = x_hat
     #x_hat = np.zeros([k.shape[1],1])
     #x_hat[filled_cols] = x_hat_old
-
 
     end_time = time.time()
     elapsed_time = end_time - start_time

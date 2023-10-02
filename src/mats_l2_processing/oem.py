@@ -15,8 +15,8 @@ def oem_basic_sparse_2(y, K, xa, Seinv, Sainv, maxiter,method='spsolve'):
         S = (K.T @ Seinv) @ K + Sainv
         KSe = K.T @ Seinv
         KSey = KSe @ (y - K @ xa)
-        # S_csr=sparse.csr_matrix(S)
-        xhat, exit_code = sparse.linalg.cg(S.tocsr(), KSey)
+        precond_diag = 1.0 / S.diagonal()
+        xhat, exit_code = sparse.linalg.cg(S.tocsr(), KSey, M=sparse.diags(precond_diag, dtype='float32'))
         if exit_code < 0:
             raise RuntimeError("Conjugate gradients error!")
         if exit_code > 0:
