@@ -23,7 +23,9 @@ from multiprocessing import Pool
 def load_abstable():
     global abstable_tan_height
     global abstable_distance
-    abstable_tan_height, abstable_distance = np.load("/home/olemar/Projects/Universitetet/MATS/MATS-L2-processing/data/splinedlogfactorsIR2.npy", allow_pickle=True)
+    factors_path = "/home/olemar/Projects/Universitetet/MATS/MATS-L2-processing/data/splinedlogfactorsIR2.npy"
+    # factors_path = "/home/lk/mats-analysis/MATS-L2-processing/data/splinedlogfactorsIR2.npy"
+    abstable_tan_height, abstable_distance = np.load(factors_path, allow_pickle=True)
     return
 
 
@@ -36,6 +38,7 @@ def generate_timescale():
 def generate_stepsize():
     global stepsize
     stepsize = 100
+    # stepsize = 10
     return
 
 
@@ -110,7 +113,6 @@ def generate_local_transform(df):
     mid = int((len(df)-1)/2)
     last = len(df)-1
 
-
     eci_to_ecef = eci_to_ecef_transform(df['EXPDate'][mid])
 
     posecef_first = eci_to_ecef.apply(df.afsTangentPointECI[first]).astype('float32')
@@ -145,7 +147,7 @@ def get_steps_in_local_grid(image,ecef_to_local, satpos_ecef, los_ecef, localR=N
     poslocal = ecef_to_local.apply(posecef.T) #convert to local (for middle alongtrack measurement)
     poslocal_sph = cart2sph(poslocal)   
     poslocal_sph=np.array(poslocal_sph).T
-    
+
     if do_abs:
         weights = get_weights(poslocal_sph,s_steps,localR)
     else:
@@ -277,7 +279,7 @@ def grid_limits(df, columns, rows, ecef_to_local):
     # alongtrack_grid = np.linspace(min_along-0.2,max_along+0.2,nalong)
 
     return (min_rad - 10e3, localR + top_alt + 10e3, nalt), (min_across - 0.1, max_across + 0.1, nacross), \
-        (min_along - 0.2, max_along + 0.2, nalong)
+        (min_along - 0.6, max_along + 0.6, nalong)
 
 
 def calc_jacobian(df, columns, rows, edges=None, grid_proto=None, processes=4):
