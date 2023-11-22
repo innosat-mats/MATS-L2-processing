@@ -37,8 +37,8 @@ def generate_timescale():
 
 def generate_stepsize():
     global stepsize
-    stepsize = 100
-    # stepsize = 10
+    # stepsize = 100
+    stepsize = 10
     return
 
 
@@ -147,11 +147,10 @@ def get_steps_in_local_grid(image,ecef_to_local, satpos_ecef, los_ecef, localR=N
     poslocal = ecef_to_local.apply(posecef.T) #convert to local (for middle alongtrack measurement)
     poslocal_sph = cart2sph(poslocal)   
     poslocal_sph=np.array(poslocal_sph).T
-
     if do_abs:
         weights = get_weights(poslocal_sph,s_steps,localR)
     else:
-        weights = np.ones((poslocal_sph.shape[0],1))
+        weights = np.ones((poslocal_sph.shape[0]))
 
     return poslocal_sph,weights
 
@@ -168,7 +167,6 @@ def get_weights(posecef_sph,s_steps,localR):
     interpolated_abs_factor=interp1d([abstable_tan_height[lowertan],abstable_tan_height[uppertan]],np.array([absfactor_distance_below,absfactor_distance_above]).T)
     #get transmissivity for generated optical depth vector
     weights=np.exp(interpolated_abs_factor(target_tanalt))
-
     return weights
 
 
@@ -209,10 +207,10 @@ def grid_limits(df, columns, rows, ecef_to_local):
     localR = np.linalg.norm(sfapi.wgs84.latlon(df.TPlat[mid], df.TPlon[mid], elevation_m=0).at(current_ts).position.m)
 
     rot_sat_channel = R.from_quat(df.loc[mid]['qprime']) #Rotation between satellite pointing and channel pointing
-    
+
     q = df.loc[mid]['afsAttitudeState'] #Satellite pointing in ECI
     rot_sat_eci = R.from_quat(np.roll(q, -1)) #Rotation matrix for q (should go straight to ecef?)
-    
+
     eci_to_ecef=R.from_matrix(itrs.rotation_at(current_ts))
     satpos_eci = df.loc[mid]['afsGnssStateJ2000'][0:3] 
     satpos_ecef=eci_to_ecef.apply(satpos_eci)
@@ -300,6 +298,7 @@ def calc_jacobian(df, columns, rows, edges=None, grid_proto=None, processes=4):
         alongtrack_grid,
         acrosstrack_grid,
         ecef_to_local
+
     """
     generate_timescale()  # generates a global timescale object
     generate_stepsize()
@@ -317,35 +316,37 @@ def calc_jacobian(df, columns, rows, edges=None, grid_proto=None, processes=4):
         if not all(np.abs(widths - np.mean(widths)) < 0.001 * np.abs(np.mean(widths))):
             is_regular_grid = False
             break
-
-    # Add check that all images are same format
-    # change to edges
-    # K = sp.lil_array((len(rows)*len(columns)*len(df),(len(altitude_grid)-1)*(len(alongtrack_grid)-1)*(len(acrosstrack_grid)-1)))
+    do_abs = (df['channel'][0] == "IR2")
+    if do_abs:
+        print("Warning: absorbtion disabled for selected channel (not implemented yet).")
     per_image_args = [(i, df.loc[i], df.iloc[i], df['EXPDate'][i]) for i in range(len(df))]
-    common_args = (edges, is_regular_grid, columns, rows, ecef_to_local,
-                   altitude_grid, alongtrack_grid, acrosstrack_grid)
-
+    common_args = (edges, is_regular_grid, do_abs, columns, rows,
+                   ecef_to_local, altitude_grid, alongtrack_grid, acrosstrack_grid)
     time0 = time.time()
     with Pool(processes=processes) as pool:
         results = pool.starmap(image_jacobian, zip(per_image_args, repeat(common_args)))
     time1 = time.time()
     print("Assembling sparse Jacobian matrix...")
-    K = sp.vstack([k_part for k_part, _ in results])
-    y = np.array(list(chain.from_iterable([profiles for _, profiles in results])))
+    K = sp.vstack([k_part for k_part, _, _ in results])
+    y = np.array(list(chain.from_iterable([profiles for _, profiles, _ in results])))
+    tan_alts = np.array(list(chain.from_iterable([profiles for _, _, profiles in results])))
+
     time2 = time.time()
     print(f"Jacobian contribution from {len(df)} images calculated in {time1 - time0:.1f} s.")
     print(f"Results assembled to a sparse matrix in {time2 - time1:.1f} s.")
-    return y, K, altitude_grid, alongtrack_grid, acrosstrack_grid, ecef_to_local
+    return y, K, altitude_grid, alongtrack_grid, acrosstrack_grid, ecef_to_local, tan_alts
 
 
 def image_jacobian(per_image_arg, common_args):
     i, loc, iloc, expDate = per_image_arg
-    edges, grid_is_regular, columns, rows, ecef_to_local, altitude_grid, alongtrack_grid, acrosstrack_grid = common_args
+    edges, grid_is_regular, do_abs, columns, rows, \
+        ecef_to_local, altitude_grid, alongtrack_grid, acrosstrack_grid = common_args
 
     print(f"Processing of image {i} started.")
     tic = time.time()
 
     image_profiles = []
+    image_tanalts = []
     image_K = sp.lil_array((len(rows) * len(columns),
                            (len(altitude_grid) - 1) * (len(alongtrack_grid) - 1) * (len(acrosstrack_grid) - 1)))
     image_k_row = 0
@@ -356,15 +357,18 @@ def image_jacobian(per_image_arg, common_args):
 
     current_ts = timescale.from_datetime(expDate)
     localR = np.linalg.norm(sfapi.wgs84.latlon(loc.TPlat, loc.TPlon, elevation_m=0).at(current_ts).position.m)
+    print(localR)
     eci_to_ecef = R.from_matrix(itrs.rotation_at(current_ts))
     satpos_eci = loc['afsGnssStateJ2000'][0:3]
     satpos_ecef = eci_to_ecef.apply(satpos_eci)
     for column in columns:
-        image_profiles.append(prepare_profile(iloc, column, rows)[0])
+        s_profile, s_tanalt = prepare_profile(iloc, column, rows)
+        image_profiles.append(s_profile)
+        image_tanalts.append(s_tanalt)
         for irow in rows:
             los_ecef = get_los_ecef(loc, column, irow, rot_sat_channel, rot_sat_eci, eci_to_ecef)
             posecef_i_sph, weights = get_steps_in_local_grid(loc, ecef_to_local, satpos_ecef, los_ecef, localR,
-                                                             do_abs=True)
+                                                             do_abs=do_abs)
             if grid_is_regular:
                 hist = histogramdd(posecef_i_sph[::1, :], weights=weights,
                     range=[[edges[0][0], edges[0][-1]], [edges[1][0], edges[1][-1]], [edges[2][0], edges[2][-1]]],
@@ -376,6 +380,6 @@ def image_jacobian(per_image_arg, common_args):
 
     toc = time.time()
     print(f"Image {i} processed in {toc-tic:.1f} s.")
-    return image_K, image_profiles
+    return image_K, image_profiles, image_tanalts
 
 # %%
