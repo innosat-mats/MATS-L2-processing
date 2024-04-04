@@ -23,8 +23,10 @@ from multiprocessing import Pool
 def load_abstable():
     global abstable_tan_height
     global abstable_distance
-    factors_path = "/home/olemar/Projects/Universitetet/MATS/MATS-L2-processing/data/splinedlogfactorsIR2.npy"
+    # factors_path = "/home/olemar/Projects/Universitetet/MATS/MATS-L2-processing/data/splinedlogfactorsIR2.npy"
     # factors_path = "/home/lk/mats-analysis/MATS-L2-processing/data/splinedlogfactorsIR2.npy"
+    # factors_path = "/home/lukr7361/source/mats-analysis/MATS-L2-processing/data/splinedlogfactorsIR2.npy"
+    factors_path = "/home/x_lukkr/software/MATS-L2-processing/data/splinedlogfactorsIR2.npy"
     abstable_tan_height, abstable_distance = np.load(factors_path, allow_pickle=True)
     return
 
@@ -37,7 +39,7 @@ def generate_timescale():
 
 def generate_stepsize():
     global stepsize
-    # stepsize = 100
+    # /stepsize = 100
     stepsize = 10
     return
 
@@ -50,7 +52,7 @@ def generate_top_alt():
 # %%
 
 
-def prepare_profile(ch,col=None,rows=None):
+def prepare_profile(image,col=None,rows=None):
     """Extract data and tanalt for image
 
     Detailed description
@@ -62,16 +64,16 @@ def prepare_profile(ch,col=None,rows=None):
     Returns: 
         profile, tanalts
     """
-    image = np.stack(ch.ImageCalibrated)
+    # image = np.stack(ch.ImageCalibrated)
     if col is None:
-        col = int(ch['NCOL']/2)
+        col = int(image['NCOL'] / 2)
     if rows.any() == None:
-        rows = np.arrange(0,ch['NROW'])
+        rows = np.arrange(0, image['NROW'])
 
-    cs = col_heights(ch, col, 10, spline=True)
+    cs = col_heights(image, col, 10, spline=True)
     tanalt = np.array(cs(rows))
-    profile = np.array(image[rows, col])*1e15
-    return profile,tanalt
+    profile = np.array(image["ImageCalibrated"][rows, col])*1e15
+    return profile, tanalt
 
 def eci_to_ecef_transform(date):
     return R.from_matrix(itrs.rotation_at(timescale.from_datetime(date)))
@@ -93,53 +95,67 @@ def find_top_of_atmosphere(top_altitude,localR,satpos,losvec):
 
     return [distance_top_1,distance_top_2]
 
+
 def generate_steps(stepsize,top_altitude,localR,satpos,losvec):
     distance_top_of_atmosphere = find_top_of_atmosphere(top_altitude,localR,satpos,losvec)
     steps = np.arange(distance_top_of_atmosphere[0], distance_top_of_atmosphere[1], stepsize)
     return steps
 
-def generate_local_transform(df):
+
+def generate_local_transform(data):
     """Calculate the transform from ecef to the local coordinate system.
 
-    Detailed description
+    Detailed descriptiongg
 
     Args:
         df (pandas dataframe): data.
 
-    Returns: 
+    Returns:
         ecef_to_local
     """
     first = 0
-    mid = int((len(df)-1)/2)
-    last = len(df)-1
+    mid = int((data["size"] - 1) / 2)
+    last = data["size"] - 1
 
-    eci_to_ecef = eci_to_ecef_transform(df['EXPDate'][mid])
+    eci_to_ecef = eci_to_ecef_transform(data['EXPDate'][mid])
 
-    posecef_first = eci_to_ecef.apply(df.afsTangentPointECI[first]).astype('float32')
-    posecef_mid = eci_to_ecef.apply(df.afsTangentPointECI[mid]).astype('float32')
-    posecef_last = eci_to_ecef.apply(df.afsTangentPointECI[last]).astype('float32')
+    posecef_first = eci_to_ecef.apply(data["afsTangentPointECI"][first, :]).astype('float32')
+    posecef_mid = eci_to_ecef.apply(data["afsTangentPointECI"][mid, :]).astype('float32')
+    posecef_last = eci_to_ecef.apply(data["afsTangentPointECI"][last, :]).astype('float32')
 
-    observation_normal = np.cross(posecef_first,posecef_last)
-    observation_normal = observation_normal/np.linalg.norm(observation_normal)  # normalize vector
+    observation_normal = np.cross(posecef_first, posecef_last)
+    observation_normal = observation_normal / np.linalg.norm(observation_normal)  # normalize vector
 
-    posecef_mid_unit = posecef_mid/np.linalg.norm(posecef_mid)  # unit vector for central position
-    ecef_to_local = R.align_vectors([[1,0,0],[0,1,0]],[posecef_mid_unit,observation_normal])[0]
+    posecef_mid_unit = posecef_mid / np.linalg.norm(posecef_mid)  # unit vector for central position
+    ecef_to_local = R.align_vectors([[1, 0, 0], [0, 1, 0]], [posecef_mid_unit, observation_normal])[0]
 
     return ecef_to_local
 
-def get_los_ecef(image,icol,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef):
-    x, y = pix_deg(image, icol, irow) #Angles for single pixel
-    rotation_channel_pix = R.from_euler('xyz', [0, y, x], degrees=True).apply([1, 0, 0]) #Rot matrix between pixel pointing and channels pointing
+
+def get_los_ecef(image, icol, irow, rot_sat_channel, rot_sat_eci, eci_to_ecef):
+    x, y = pix_deg(image, icol, irow)  # Angles for single pixel
+    rotation_channel_pix = R.from_euler('xyz', [0, y, x], degrees=True).apply([1, 0, 0]) # Rot matrix between pixel pointing and channels pointing
     los_eci = np.array(rot_sat_eci.apply(rot_sat_channel.apply(rotation_channel_pix)))
-    los_ecef = eci_to_ecef.apply(los_eci) 
+    los_ecef = eci_to_ecef.apply(los_eci)
     return los_ecef
 
-def get_steps_in_local_grid(image,ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False):
+
+def get_image(data, idx, var):
+    res = {"num_image": idx}
+    for v in var:
+        if len(data[v].shape) > 1:
+            res[v] = data[v][idx, ...]
+        else:
+            res[v] = data[v][idx]
+    return res
+
+
+def get_steps_in_local_grid(image, ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False):
 
     if localR is None:
         date = image['EXPDate']
         current_ts = timescale.from_datetime(date)
-        localR = np.linalg.norm(sfapi.wgs84.latlon(image.TPlat, image.TPlon, elevation_m=0).at(current_ts).position.m)        
+        localR = np.linalg.norm(sfapi.wgs84.latlon(image["TPlat"], image["TPlon"], elevation_m=0).at(current_ts).position.m)        
 
     s_steps = generate_steps(stepsize,top_altitude=top_alt,localR=localR,satpos=satpos_ecef,losvec=los_ecef)
 
@@ -170,8 +186,8 @@ def get_weights(posecef_sph,s_steps,localR):
     return weights
 
 
-def generate_grid(df, columns, rows, ecef_to_local, grid_proto=None):
-    lims = grid_limits(df, columns, rows, ecef_to_local)
+def generate_grid(data, columns, rows, ecef_to_local, grid_proto=None):
+    lims = grid_limits(data, columns, rows, ecef_to_local)
     print(lims)
     if grid_proto is None:
         grid_proto = [lims[i][2] for i in range(3)]
@@ -196,23 +212,23 @@ def generate_grid(df, columns, rows, ecef_to_local, grid_proto=None):
     return result
 
 
-def grid_limits(df, columns, rows, ecef_to_local):
+def grid_limits(data, columns, rows, ecef_to_local):
 
     first = 0
-    mid = int((len(df)-1)/2)
-    last = len(df)-1
+    mid = int((data["size"] - 1) / 2)
+    last = data["size"] - 1
 
-    mid_date = df['EXPDate'][mid]
+    mid_date = data['EXPDate'][mid]
     current_ts = timescale.from_datetime(mid_date)
-    localR = np.linalg.norm(sfapi.wgs84.latlon(df.TPlat[mid], df.TPlon[mid], elevation_m=0).at(current_ts).position.m)
+    localR = np.linalg.norm(sfapi.wgs84.latlon(data["TPlat"][mid], data["TPlon"][mid], elevation_m=0).at(current_ts).position.m)
 
-    rot_sat_channel = R.from_quat(df.loc[mid]['qprime']) #Rotation between satellite pointing and channel pointing
+    rot_sat_channel = R.from_quat(data['qprime'][mid, :]) # Rotation between satellite pointing and channel pointing
 
-    q = df.loc[mid]['afsAttitudeState'] #Satellite pointing in ECI
+    q = data['afsAttitudeState'][mid, :] #Satellite pointing in ECI
     rot_sat_eci = R.from_quat(np.roll(q, -1)) #Rotation matrix for q (should go straight to ecef?)
 
     eci_to_ecef=R.from_matrix(itrs.rotation_at(current_ts))
-    satpos_eci = df.loc[mid]['afsGnssStateJ2000'][0:3] 
+    satpos_eci = data['afsGnssStateJ2000'][mid, 0:3] 
     satpos_ecef=eci_to_ecef.apply(satpos_eci)
 
 
@@ -221,37 +237,29 @@ def grid_limits(df, columns, rows, ecef_to_local):
         mid_col = columns[0]
     else:
         left_col = columns[0]
-        mid_col = int(df["NCOL"][0]/2) -1
-        right_col =df["NCOL"][0] - 1
+        mid_col = int(data["NCOL"][0] / 2) - 1
+        right_col = data["NCOL"][0] - 1
 
     irow = rows[0]
     poslocal_sph = []       
 
-    #Which localR to use in get_step_local_grid?
+    get_los_vars = ['CCDSEL', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'EXPDate', 'TPlat', 'TPlon']
+    # Which localR to use in get_step_local_grid?
+    for idx in [first, mid, last]:
+        image = get_image(data, idx, get_los_vars)
+        los_ecef = get_los_ecef(image, mid_col, irow, rot_sat_channel,rot_sat_eci,eci_to_ecef)
+        poslocal_sph.append(get_steps_in_local_grid(image, ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
+    
 
-    los_ecef = get_los_ecef(df.loc[first],mid_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-    poslocal_sph.append(get_steps_in_local_grid(df.loc[first],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
-    los_ecef = get_los_ecef(df.loc[mid],mid_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-    poslocal_sph.append(get_steps_in_local_grid(df.loc[mid],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
-    los_ecef = get_los_ecef(df.loc[last],mid_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-    poslocal_sph.append(get_steps_in_local_grid(df.loc[last],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
-
-
-    if len(columns)>1:
-        los_ecef = get_los_ecef(df.loc[first],left_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-        poslocal_sph.append(get_steps_in_local_grid(df.loc[first],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
-        los_ecef = get_los_ecef(df.loc[mid],left_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-        poslocal_sph.append(get_steps_in_local_grid(df.loc[mid],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
-        los_ecef = get_los_ecef(df.loc[last],left_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-        poslocal_sph.append(get_steps_in_local_grid(df.loc[last],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
-
-        los_ecef = get_los_ecef(df.loc[first],right_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-        poslocal_sph.append(get_steps_in_local_grid(df.loc[first],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
-        los_ecef = get_los_ecef(df.loc[mid],right_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-        poslocal_sph.append(get_steps_in_local_grid(df.loc[mid],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
-        los_ecef = get_los_ecef(df.loc[last],right_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-        poslocal_sph.append(get_steps_in_local_grid(df.loc[last],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
-
+    if len(columns) > 1:
+        for col in [left_col, right_col]:
+            for idx in [first, mid, last]:
+                image = get_image(data, idx, get_los_vars)
+                los_ecef = get_los_ecef(image, col, irow, rot_sat_channel, rot_sat_eci,
+                                        eci_to_ecef)
+                poslocal_sph.append(get_steps_in_local_grid(image, ecef_to_local,
+                                    satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
+        
     poslocal_sph = np.vstack(poslocal_sph)
     max_rad = poslocal_sph[:,0].max()
     min_rad = poslocal_sph[:,0].min()
@@ -263,9 +271,9 @@ def grid_limits(df, columns, rows, ecef_to_local):
         max_across = max_across + 0.2
         min_across = min_across - 0.2
 
-    nalt = int(len(rows/2))+2
-    nacross = int(len(columns/2))+2
-    nalong = int(len(df)/2)+2
+    nalt = int(len(rows / 2)) + 2
+    nacross = int(len(columns / 2)) + 2
+    nalong = int(data["size"] / 2) + 2
 
     if (nacross-2)<2:
         nacross=2
@@ -280,7 +288,7 @@ def grid_limits(df, columns, rows, ecef_to_local):
         (min_along - 0.6, max_along + 0.6, nalong)
 
 
-def calc_jacobian(df, columns, rows, edges=None, grid_proto=None, processes=4):
+def calc_jacobian(data, columns, rows, edges=None, grid_proto=None, processes=4):
     # -*- coding: utf-8 -*-
     """Calculate Jacobian.
 
@@ -304,10 +312,10 @@ def calc_jacobian(df, columns, rows, edges=None, grid_proto=None, processes=4):
     generate_stepsize()
     generate_top_alt()
     load_abstable()
-    ecef_to_local = generate_local_transform(df)
+    ecef_to_local = generate_local_transform(data)
 
     if edges is None:
-        altitude_grid, acrosstrack_grid, alongtrack_grid = generate_grid(df, columns, rows, ecef_to_local, grid_proto)
+        altitude_grid, acrosstrack_grid, alongtrack_grid = generate_grid(data, columns, rows, ecef_to_local, grid_proto)
         edges = [altitude_grid, acrosstrack_grid, alongtrack_grid]
 
     is_regular_grid = True
@@ -316,15 +324,18 @@ def calc_jacobian(df, columns, rows, edges=None, grid_proto=None, processes=4):
         if not all(np.abs(widths - np.mean(widths)) < 0.001 * np.abs(np.mean(widths))):
             is_regular_grid = False
             break
-    do_abs = (df['channel'][0] == "IR2")
-    if do_abs:
+    do_abs = (data['channel'] == "IR2")
+    if not do_abs:
         print("Warning: absorbtion disabled for selected channel (not implemented yet).")
-    per_image_args = [(i, df.loc[i], df.iloc[i], df['EXPDate'][i]) for i in range(len(df))]
+    image_vars = ['CCDSEL', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'NROW',
+                  'EXPDate', 'qprime', 'afsGnssStateJ2000', 'afsAttitudeState',
+                  "ImageCalibrated", "TPlon", "TPlat"]
+    image_args = [get_image(data, i, image_vars) for i in range(data["size"])]
     common_args = (edges, is_regular_grid, do_abs, columns, rows,
                    ecef_to_local, altitude_grid, alongtrack_grid, acrosstrack_grid)
     time0 = time.time()
     with Pool(processes=processes) as pool:
-        results = pool.starmap(image_jacobian, zip(per_image_args, repeat(common_args)))
+        results = pool.starmap(image_jacobian, zip(image_args, repeat(common_args)))
     time1 = time.time()
     print("Assembling sparse Jacobian matrix...")
     K = sp.vstack([k_part for k_part, _, _ in results])
@@ -332,17 +343,16 @@ def calc_jacobian(df, columns, rows, edges=None, grid_proto=None, processes=4):
     tan_alts = np.array(list(chain.from_iterable([profiles for _, _, profiles in results])))
 
     time2 = time.time()
-    print(f"Jacobian contribution from {len(df)} images calculated in {time1 - time0:.1f} s.")
+    print(f"Jacobian contribution from {data['size']} images calculated in {time1 - time0:.1f} s.")
     print(f"Results assembled to a sparse matrix in {time2 - time1:.1f} s.")
     return y, K, altitude_grid, alongtrack_grid, acrosstrack_grid, ecef_to_local, tan_alts
 
 
-def image_jacobian(per_image_arg, common_args):
-    i, loc, iloc, expDate = per_image_arg
+def image_jacobian(image, common_args):
     edges, grid_is_regular, do_abs, columns, rows, \
         ecef_to_local, altitude_grid, alongtrack_grid, acrosstrack_grid = common_args
 
-    print(f"Processing of image {i} started.")
+    print(f"Processing of image {image['num_image']} started.")
     tic = time.time()
 
     image_profiles = []
@@ -351,24 +361,23 @@ def image_jacobian(per_image_arg, common_args):
                            (len(altitude_grid) - 1) * (len(alongtrack_grid) - 1) * (len(acrosstrack_grid) - 1)))
     image_k_row = 0
 
-    rot_sat_channel = R.from_quat(loc['qprime'])  # Rotation between satellite pointing and channel pointing
-    q = loc['afsAttitudeState']  # Satellite pointing in ECI
+    rot_sat_channel = R.from_quat(image['qprime'])  # Rotation between satellite pointing and channel pointing
+    q = image['afsAttitudeState']  # Satellite pointing in ECI
     rot_sat_eci = R.from_quat(np.roll(q, -1))  # Rotation matrix for q (should go straight to ecef?)
 
-    current_ts = timescale.from_datetime(expDate)
-    localR = np.linalg.norm(sfapi.wgs84.latlon(loc.TPlat, loc.TPlon, elevation_m=0).at(current_ts).position.m)
-    print(localR)
+    current_ts = timescale.from_datetime(image['EXPDate'])
+    localR = np.linalg.norm(sfapi.wgs84.latlon(image["TPlat"], image["TPlon"], elevation_m=0).at(current_ts).position.m)
     eci_to_ecef = R.from_matrix(itrs.rotation_at(current_ts))
-    satpos_eci = loc['afsGnssStateJ2000'][0:3]
+    satpos_eci = image['afsGnssStateJ2000'][0:3]
     satpos_ecef = eci_to_ecef.apply(satpos_eci)
     for column in columns:
-        s_profile, s_tanalt = prepare_profile(iloc, column, rows)
+        s_profile, s_tanalt = prepare_profile(image, column, rows)
         image_profiles.append(s_profile)
         image_tanalts.append(s_tanalt)
         for irow in rows:
-            los_ecef = get_los_ecef(loc, column, irow, rot_sat_channel, rot_sat_eci, eci_to_ecef)
-            posecef_i_sph, weights = get_steps_in_local_grid(loc, ecef_to_local, satpos_ecef, los_ecef, localR,
-                                                             do_abs=do_abs)
+            los_ecef = get_los_ecef(image, column, irow, rot_sat_channel, rot_sat_eci, eci_to_ecef)
+            posecef_i_sph, weights = get_steps_in_local_grid(image, ecef_to_local, satpos_ecef,
+                                                             los_ecef, localR, do_abs=do_abs)
             if grid_is_regular:
                 hist = histogramdd(posecef_i_sph[::1, :], weights=weights,
                     range=[[edges[0][0], edges[0][-1]], [edges[1][0], edges[1][-1]], [edges[2][0], edges[2][-1]]],
@@ -379,7 +388,7 @@ def image_jacobian(per_image_arg, common_args):
             image_k_row += 1
 
     toc = time.time()
-    print(f"Image {i} processed in {toc-tic:.1f} s.")
+    print(f"Image {image['num_image']} processed in {toc-tic:.1f} s.")
     return image_K, image_profiles, image_tanalts
 
 # %%
