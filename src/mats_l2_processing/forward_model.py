@@ -80,7 +80,7 @@ def prepare_profile(ch, col=None, rows=None):
 def prepare_profiles(ch, vnames, col, rows):
     cs = col_heights(ch, col, 10, spline=True)
     tanalts = np.array(cs(rows))
-    profiles = [np.array(np.stack(ch[vname])[rows, col]) * 1e16 / ch["TEXPMS"] for vname in vnames]
+    profiles = [np.array(np.stack(ch[vname])[rows, col]) * 1e13 for vname in vnames]
     return profiles, tanalts
 
 
@@ -494,7 +494,7 @@ def calc_rad2(pos, path_step, o2s, atm, rt_data, edges):
     # times.append(time.time())
     # titles.append("Temp interpolation")
 
-    exp_tau = np.exp(-(sigmas * o2).cumsum(axis=1)) * (path_step / 4 / np.pi * 1e6)
+    exp_tau = np.exp(-(sigmas * o2).cumsum(axis=1) * path_step * 1e2) * (path_step / 4 / np.pi * 1e6)
     del sigmas
     # times.append(time.time())
     # titles.append("exp_tau")

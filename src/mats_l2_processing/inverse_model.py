@@ -142,7 +142,7 @@ def Sa_inv_tikhonov(grid, weight_0, diff_weights=[0.0, 0.0, 0.0], laplacian_weig
         term = diff_weights[i] ** 2 * (L_i.T @ L_i)
         Sa_inv += term
         if store_terms:
-            terms[names[i]] = term.copy(
+            terms[names[i]] = term.copy()
         del L_i
 
     if laplacian_weight != 0:
@@ -155,7 +155,7 @@ def Sa_inv_tikhonov(grid, weight_0, diff_weights=[0.0, 0.0, 0.0], laplacian_weig
     return Sa_inv, terms
 
 
-def Sa_inv_multivariate(grid, weights, volume_factors=False):
+def Sa_inv_multivariate(grid, weights, volume_factors=False, store_terms=False):
     """
     Builds Sa_inv for retrievas with two variables on the same grid.
 
@@ -172,9 +172,9 @@ def Sa_inv_multivariate(grid, weights, volume_factors=False):
 
     assert len(weights) > 1
     assert all([len(w) == 5 for w in weights])
-    Sas = [Sa_inv_tikhonov(grid, w[0], diff_weights=w[1:4], laplacian_weight=w[4], volume_factors=volume_factors)
-           for w in weights]
-    return sp.block_diag(Sas)
+    Sas = [Sa_inv_tikhonov(grid, w[0], diff_weights=w[1:4], laplacian_weight=w[4], volume_factors=volume_factors,
+                           store_terms=store_terms) for w in weights]
+    return sp.block_diag([x[0] for x in Sas]), [x[1] for x in Sas]
 
 
 def do_inversion(k, y, Sa_inv=None, Se_inv=None, xa=None, method='spsolve'):
