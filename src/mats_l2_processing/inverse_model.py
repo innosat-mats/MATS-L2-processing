@@ -142,7 +142,7 @@ def Sa_inv_tikhonov(grid, weight_0, diff_weights=[0.0, 0.0, 0.0], laplacian_weig
         term = diff_weights[i] ** 2 * (L_i.T @ L_i)
         Sa_inv += term
         if store_terms:
-            terms[names[i]] = term.copy()
+            terms[names[i]] = term.copy(
         del L_i
 
     if laplacian_weight != 0:
@@ -153,6 +153,28 @@ def Sa_inv_tikhonov(grid, weight_0, diff_weights=[0.0, 0.0, 0.0], laplacian_weig
             terms["Laplacian"] = term.copy()
 
     return Sa_inv, terms
+
+
+def Sa_inv_multivariate(grid, weights, volume_factors=False):
+    """
+    Builds Sa_inv for retrievas with two variables on the same grid.
+
+    Args:
+    grid - tuple of 1-D ndarrays, each represent grid along each axis in order,
+    weights - list of tuples of the form (weight_0, diff_weights[0], diff_weights[1],
+    diff_weights[2], laplacian_weights) for each variable.
+    volume_factors - scale the matrix elements according to volume of each grid cell.
+                     This is only relevant for general rectilinear (i.e. not regular) grids.
+
+    Returns:
+    Sa_inv - sparse matrix.
+    """
+
+    assert len(weights) > 1
+    assert all([len(w) == 5 for w in weights])
+    Sas = [Sa_inv_tikhonov(grid, w[0], diff_weights=w[1:4], laplacian_weight=w[4], volume_factors=volume_factors)
+           for w in weights]
+    return sp.block_diag(Sas)
 
 
 def do_inversion(k, y, Sa_inv=None, Se_inv=None, xa=None, method='spsolve'):
