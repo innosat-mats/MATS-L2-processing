@@ -13,12 +13,12 @@ from bisect import bisect_left
 # import boost_histogram as bh
 import mygrad as mg
 import time
-from itertools import chain, repeat
+from itertools import chain, repeat, product
 from multiprocessing import Pool
 # import jax.numpy as jnp
 # from jax import grad, jit, value_and_grad
 # from bisect import bisect_left
-
+import logging
 # %%
 
 
@@ -40,7 +40,7 @@ def generate_timescale():
 def generate_stepsize():
     global stepsize
     # stepsize = 100
-    stepsize = 1000
+    stepsize = 8000
     return
 
 
@@ -190,7 +190,7 @@ def get_weights(posecef_sph,s_steps,localR):
 
 def generate_grid(data, columns, rows, ecef_to_local, grid_proto=None):
     lims = grid_limits(data, columns, rows, ecef_to_local)
-    print(lims)
+    # print(lims)
     if grid_proto is None:
         grid_proto = [lims[i][2] for i in range(3)]
     result = []
@@ -239,8 +239,10 @@ def grid_limits(data, columns, rows, ecef_to_local):
         mid_col = columns[0]
     else:
         left_col = columns[0]
-        mid_col = int(data["NCOL"][0] / 2) - 1
-        right_col = data["NCOL"][0] - 1
+        right_col = columns[-1]
+        mid_col = int((left_col + right_col) / 2)
+        # mid_col = int(data["NCOL"][0] / 2) - 1
+        # right_col = data["NCOL"][0] - 1
 
     irow = rows[0]
     poslocal_sph = []
@@ -297,7 +299,7 @@ def center_grid(grid):
 def get_image(data, idx, var):
     res = {"num_image": idx}
     for v in var:
-        if len(data[v].shape) > 1:
+        if hasattr(data[v], 'shape') and len(data[v].shape) > 1:
             res[v] = data[v][idx, ...]
         else:
             res[v] = data[v][idx]
@@ -450,25 +452,41 @@ def grad_path2grid(pathGrad, gridVar, posidx, cumulative=False):
     return res
 
 
+def grad_path2grid_weights(pathGrad, gridVar, pWeights, cumulative=False):
+    res = np.zeros((pathGrad.shape[0], *gridVar.shape))
+    it = np.nditer(pWeights[1], flags=["multi_index"])
+    for w in it:
+        coord = pWeights[0][it.multi_index[0], it.multi_index[1], :]
+        res[:, coord[0], coord[1], coord[2]] += w * pathGrad[:, it.multi_index[0]]
+    return res
+
+
+def grad_path2grid_weights_dummy(pathGrad, gridVar, pW, cumulative=False):
+    res = np.zeros((pathGrad.shape[0], *gridVar.shape))
+    for idx in range(pathGrad.shape[1]):
+        res[:, pW[0][idx, 0, 0], pW[0][idx, 0, 1], pW[0][idx, 0, 2]] += pW[1][idx, 0] * pathGrad[:, idx]
+    return res
+
+
 def calc_rad(pos, path_step, o2s, atm, rt_data, edges):
     VER, Temps = [np.array(arr) for arr in atm]
     startT = np.linspace(100, 600, 501)
-    pathtemps, posidxs = interppos(pos, Temps, edges)
+    pathtemps, pointweights = interppos(pos, Temps, edges)
     o2, _ = interppos(pos, o2s, edges)
     pathVER, _ = interppos(pos, VER, edges)
     sigmas, sigmas_pTgrad = interp_and_grad_T(pathtemps, startT, rt_data["sigma"], rt_data["sigma_grad"])
     emissions, emissions_pTgrad = interp_and_grad_T(pathtemps, startT, rt_data["emission"], rt_data["emission_grad"])
     exp_tau = np.exp(-(sigmas * o2).cumsum(axis=1)) * (path_step / 4 / np.pi * 1e6)
     del sigmas
-    grad_Temps = grad_path2grid(rt_data["filters"] @ (pathVER * exp_tau * emissions_pTgrad), Temps, posidxs)
+    grad_Temps = grad_path2grid(rt_data["filters"] @ (pathVER * exp_tau * emissions_pTgrad), Temps, pointweights)
     del emissions_pTgrad
     path_tau_em = pathVER * exp_tau * emissions
-    grad_Temps -= grad_path2grid(rt_data["filters"] @ (np.flip(np.cumsum(np.flip(path_tau_em, axis=1), axis=1), axis=1) * sigmas_pTgrad * o2), Temps, posidxs)
+    grad_Temps -= grad_path2grid(rt_data["filters"] @ (np.flip(np.cumsum(np.flip(path_tau_em, axis=1), axis=1), axis=1) * sigmas_pTgrad * o2), Temps, pointweights)
     del sigmas_pTgrad, o2
     res = np.sum(rt_data["filters"] @ path_tau_em, axis=1)
     del path_tau_em
     # rad = rt_data["filters"] @ (pathVER * tau_em)
-    grad_VER = grad_path2grid(rt_data["filters"] @ (exp_tau * emissions), VER, posidxs)
+    grad_VER = grad_path2grid(rt_data["filters"] @ (exp_tau * emissions), VER, pointweights)
     # grad_pTemps_emi = rt_data["filters"] @ (pathVER * exp_tau * emissions_pTgrad)
     # grad_Temps_tau = grad_path2grid(rt_data["filters"] @ (np.flip(np.cumsum(np.flip(pathVER * exp_tau * emissions, axis=1), axis=1), axis=1) * sigmas_pTgrad * o2), Temps, posidxs)
 
@@ -479,69 +497,94 @@ def calc_rad(pos, path_step, o2s, atm, rt_data, edges):
 
 
 def calc_rad2(pos, path_step, o2s, atm, rt_data, edges):
+    interppos_func = interppos_trilinear
     # times = [time.time()]
     # titles = []
     VER, Temps = [np.array(arr) for arr in atm]
     startT = np.linspace(100, 600, 501)
-    pathtemps, posidxs = interppos(pos, Temps, edges)
-    o2, _ = interppos(pos, o2s, edges)
-    pathVER, _ = interppos(pos, VER, edges)
+    pathtemps, o2, pathVER, pWeights = interppos_func(pos, [Temps, o2s, VER], edges)
+    # ##  o2, _ = interppos_func(pos, o2s, edges)
+    # ##  pathVER, _ = interppos_func(pos, VER, edges)
     # times.append(time.time())
     # titles.append("Path interpolation")
-    sigmas, sigmas_pTgrad, emissions, emissions_pTgrad = interp_and_grad_T(pathtemps, startT,
+    sigmas, sigmas_pTgrad, emissions, emissions_pTgrad = interp_T(pathtemps, startT,
         [rt_data[name] for name in ["sigma", "sigma_grad", "emission", "emission_grad"]])
-    # emissions, emissions_pTgrad = interp_and_grad_T(pathtemps, startT, rt_data["emission"], rt_data["emission_grad"])
+    # ## emissions, emissions_pTgrad = interp_and_grad_T(pathtemps, startT, rt_data["emission"], rt_data["emission_grad"])
     # times.append(time.time())
     # titles.append("Temp interpolation")
-
     exp_tau = np.exp(-(sigmas * o2).cumsum(axis=1) * path_step * 1e2) * (path_step / 4 / np.pi * 1e6)
     del sigmas
     # times.append(time.time())
     # titles.append("exp_tau")
-    #emissions, emissions_pTgrad = interp_and_grad_T(pathtemps, startT, rt_data["emission"], rt_data["emission_grad"])
-    # times.append(time.time())
-    # titles.append("Emission interpolation")
-    grad_Temps = grad_path2grid(rt_data["filters"] @ (exp_tau * emissions_pTgrad) * pathVER, Temps, posidxs)
+    # ## emissions, emissions_pTgrad = interp_and_grad_T(pathtemps, startT, rt_data["emission"], rt_data["emission_grad"])
+    # ## times.append(time.time())
+    # ## titles.append("Emission interpolation")
+    grad_Temps = grad_path2grid_weights(rt_data["filters"] @ (exp_tau * emissions_pTgrad) * pathVER, Temps, pWeights)
     # times.append(time.time())
     # titles.append("Temp gradiant (emissions)")
     del emissions_pTgrad
     path_tau_em = exp_tau * emissions
-    grad_Temps -= grad_path2grid(rt_data["filters"] @ (np.flip(np.cumsum(np.flip(path_tau_em * pathVER, axis=1), axis=1), axis=1) * sigmas_pTgrad) * o2, Temps, posidxs)
+    grad_Temps -= grad_path2grid_weights(rt_data["filters"] @ (np.flip(np.cumsum(np.flip(path_tau_em * pathVER, axis=1), axis=1), axis=1) * sigmas_pTgrad) * o2, Temps, pWeights)
     # times.append(time.time())
     # titles.append("Temp gradient (tau)")
     del sigmas_pTgrad, o2
     path_tau_em = rt_data["filters"] @ path_tau_em
     res = np.sum(path_tau_em * pathVER, axis=1)
-    grad_VER = grad_path2grid(path_tau_em, VER, posidxs)
+    grad_VER = grad_path2grid_weights(path_tau_em, VER, pWeights)
     # times.append(time.time())
     # titles.append("VER gradient")
-    #print_times(times, titles)
+    # print_times(times, titles)
     return res, grad_VER, grad_Temps
+
+
+def calc_rad_ng(pos, path_step, o2s, atm, rt_data, edges):
+    interppos_func = interppos_trilinear
+    VER, Temps = [np.array(arr) for arr in atm]
+    startT = np.linspace(100, 600, 501)
+    pathtemps, o2, pathVER, _ = interppos_func(pos, [Temps, o2s, VER], edges)
+    # ## o2, _ = interppos_func(pos, o2s, edges)
+    # ## pathVER, _ = interppos_func(pos, VER, edges)
+    sigmas, emissions = interp_T(pathtemps, startT, [rt_data[name] for name in ["sigma", "emission"]])
+    exp_tau = np.exp(-(sigmas * o2).cumsum(axis=1) * path_step * 1e2) * (path_step / 4 / np.pi * 1e6)
+    del sigmas
+    path_tau_em = rt_data["filters"] @ (exp_tau * emissions)
+    res = np.sum(path_tau_em * pathVER, axis=1)
+    return res
+
+
+def diag_rad_ng(pos, path_step, o2s, atm, rt_data, edges):
+    VER, Temps = [np.array(arr) for arr in atm]
+    startT = np.linspace(100, 600, 501)
+    pathtemps, _ = interppos(pos, Temps, edges)
+    o2, _ = interppos(pos, o2s, edges)
+    pathVER, _ = interppos(pos, VER, edges)
+    sigmas, emissions = interp_and_grad_T(pathtemps, startT, [rt_data[name] for name in ["sigma", "emission"]])
+    return sigmas * o2 * path_step * 1e2, emissions, pathVER
 
 
 def print_times(times, titles):
     assert len(titles) + 1 == len(times)
     res = ""
     for i, title in enumerate(titles):
-        res += f"{title}: {times[i + 1] - times[i]:.3f} s, "
+        res += f"{title}: {times[i + 1] - times[i]:.3e} s, "
+    res += f" {times[-1] - times[0]:.3e} s total."
     print(res)
 
 
-def interp_and_grad_T(x, xs, ys):
-    ix = np.array(np.floor(x - 100), dtype=int)
-    # return ys[ix, :].T
-    # return ((x - xs[ix - 1]) * ys[ix, :].T + (xs[ix] - x) * ys[ix - 1, :].T) / (xs[ix] - xs[ix - 1])
-    #return ((x - xs[ix - 1]) * ys[ix, :].T + (xs[ix] - x) * ys[ix - 1, :].T)
-    return [y[ix, :].T for y in ys]
+def interp_T(x, xs, ys):
+    step = xs[1] - xs[0]
+    ix = np.array(np.floor((x - xs[0]) / step), dtype=int)
+    w0 = (xs[ix + 1] - x) / step
+    w1 = (x - xs[ix]) / step
+    return [w0 * y[ix, :].T + w1 * y[ix + 1, :].T for y in ys]
 
 
 def interp_and_grad_T2(x, xs, ys):
-    ix = np.array(np.floor(x - 100), dtype=int)
+    ix = np.array(np.floor((x - xs[0]) / (xs[1] - xs[0])), dtype=int)
     # return ys[ix, :].T
     # return ((x - xs[ix - 1]) * ys[ix, :].T + (xs[ix] - x) * ys[ix - 1, :].T) / (xs[ix] - xs[ix - 1])
     #return ((x - xs[ix - 1]) * ys[ix, :].T + (xs[ix] - x) * ys[ix - 1, :].T)
     return [y[ix, :] for y in ys]
-
 
 
 def interppos(pos, inArray, edges):
@@ -552,6 +595,42 @@ def interppos(pos, inArray, edges):
     #     print(c, edges[c].shape, edges[c][0], np.diff(edges[c]).mean(), edges[c][-1])
     #     print(c, pos[:, c])
     return inArray[iz, iy, ix], (iz, iy, ix)
+
+
+def interppos_regular_nearest(pos, inArray, edges, edge_steps):
+    iz, iy, ix = [np.array(np.floor((pos[:, i] - edges[i][0])[:, :, :, np.newaxis] / edge_steps[i]),
+                           dtype=int) for i in range(3)]
+    iw = np.ones_like(iz)
+    # for c in range(3):
+    #     print(c, edges[c].shape, edges[c][0], np.diff(edges[c]).mean(), edges[c][-1])
+    #     print(c, pos[:, c])
+    return inArray[iz, iy, ix], (iz, iy, ix, iw)
+
+
+def interppos_rectilinear_nearest(pos, inArray, edges):
+    crd = np.stack([np.searchsorted(edges[i], pos[:, i], sorter=None) - 1 for i in range(3)], axis=-1)[:, np.newaxis, :]
+    return inArray[crd[:, 0, 0], crd[:, 0, 1], crd[:, 0, 2]], (crd, np.ones((pos.shape[0], 1)))
+
+
+def interppos_trilinear(pos, data, edges):
+    num_pos = pos.shape[0]
+    coords0 = np.stack([np.searchsorted(edges[i], pos[:, i], sorter=None) - 1 for i in range(3)], axis=-1)
+
+    coords, dists, iw = np.zeros((num_pos, 8, 3), dtype=int), np.zeros((num_pos, 3, 2)), np.zeros((num_pos, 8))
+    dists[:, :, 1] = np.stack([pos[:, i] - edges[i][coords0[:, i]] for i in range(3)], axis=-1)
+    dists[:, :, 0] = np.stack([edges[i][coords0[:, i] + 1] - pos[:, i] for i in range(3)], axis=-1)
+
+    idata = np.stack(data, axis=0)
+    res = np.zeros((len(data), num_pos))
+
+    norms = np.prod(dists[:, :, 0] + dists[:, :, 1], axis=1)
+    for i, idx in enumerate(product([0, 1], repeat=3)):
+        for j in range(3):
+            coords[:, i, j] = coords0[:, j] + idx[j]
+        iw[:, i] = dists[:, 0, idx[0]] * dists[:, 1, idx[1]] * dists[:, 2, idx[2]]
+        res += iw[:, i] * idata[:, coords[:, i, 0], coords[:, i, 1], coords[:, i, 2]]
+    res /= norms[np.newaxis, :]
+    return *[res[i, :] for i in range(len(data))], (coords, iw / norms[:, np.newaxis])
 
 
 def get_alt_lat_lon(radius_grid, acrosstrack_grid, alongtrack_grid, ecef_to_local):
@@ -565,7 +644,9 @@ def get_alt_lat_lon(radius_grid, acrosstrack_grid, alongtrack_grid, ecef_to_loca
     return altt, latt, lonn
 
 
-def initialize_T_jacobian(data, columns, rows, grid_proto=None):
+def initialize_T_jacobian(data, columns, rows, k_alt_range=None, grid_proto=None, processes=1, test_LOS=False):
+    logging.info("Initializing 3-D grid...")
+
     generate_timescale()  # generates a global timescale object
     generate_stepsize()
     generate_top_alt()
@@ -574,10 +655,13 @@ def initialize_T_jacobian(data, columns, rows, grid_proto=None):
     jb = {"data": data, "columns": columns, "rows": rows}
     jb["ecef_to_local"] = generate_local_transform(data)
     jb["edges"] = generate_grid(data, columns, rows, jb["ecef_to_local"], grid_proto)
-    jb["rad_grid"], jb["acrosstrack_grid"], jb["alongtrack_grid"] = jb["edges"]
-    jb["alt"], jb["lat"], jb["lon"] = \
-        get_alt_lat_lon(*[center_grid(jb[name]) for name in
-                        ["rad_grid", "acrosstrack_grid", "alongtrack_grid"]], jb["ecef_to_local"])
+    # jb["rad_grid"], jb["acrosstrack_grid"], jb["alongtrack_grid"] = jb["edges"]
+    cnames = ["rad_grid", "acrosstrack_grid", "alongtrack_grid"]
+    for i, name in enumerate(cnames):
+        jb[name] = jb["edges"][i]
+        jb[f"{name}_c"] = center_grid(jb["edges"][i])
+    jb["alt"], jb["lat"], jb["lon"] = get_alt_lat_lon(jb["rad_grid_c"], jb["acrosstrack_grid_c"],
+                                                      jb["alongtrack_grid_c"], jb["ecef_to_local"])
 
     is_regular_grid = True
     for axis_edges in jb["edges"]:
@@ -586,10 +670,154 @@ def initialize_T_jacobian(data, columns, rows, grid_proto=None):
             is_regular_grid = False
             break
     jb["is_regular_grid"] = is_regular_grid
+
+    if k_alt_range is None:
+        jb["excludeK"] = None
+        jb["k_alt_range"] = (0, 150)
+    else:
+        jb["excludeK"] = np.logical_or(jb["alt"] < k_alt_range[0] * 1e3, jb["alt"] > k_alt_range[1] * 1e3)
+        jb["k_alt_range"] = k_alt_range
+
+    jb["image_vars"] = ['CCDSEL', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'NROW',
+                        'EXPDate', 'qprime', 'afsGnssStateJ2000', 'afsAttitudeState',
+                        "IR1c", "IR2c", "TPlon", "TPlat", "TEXPMS"]
+    if test_LOS:
+        logging.info("Calculating LOS...")
+        jb["data"]["los"] = multiprocess(calc_los_image, jb["data"], jb["image_vars"], processes,
+                                         [jb["columns"], jb["rows"], jb["ecef_to_local"]])
+        logging.info("Geometry successfully verified!")
+        del jb["data"]["los"]
     return jb
 
 
-def calc_T_jacobian(jb, rt_data, o2, atm, processes=4):
+def multiprocess(func, dataset, image_args, nproc, common_args, unzip=False):
+    assert nproc >= 1, "Invalid number of processes specified!"
+    images = [get_image(dataset, i, image_args) for i in range(dataset["size"])]
+    if nproc == 1:  # Serial processing (implemented separately to simplify debugging)
+        res = []
+        for image in images:
+            res.append(func(image, common_args))
+    else:  # Actual multiprocessing
+        with Pool(processes=nproc) as pool:
+            res = pool.starmap(func, zip(images, repeat(common_args)))
+
+    if unzip:
+        unzipped = []
+        for i in range(len(res[0])):
+            unzipped.append(np.array(list(chain.from_iterable([image_res[i] for image_res in res]))))
+        return unzipped
+    else:
+        return res
+
+
+def calc_los_image(image, common_args):
+    tic = time.time()
+    columns, rows, ecef_to_local = common_args
+    rot_sat_channel = R.from_quat(image['qprime'])  # Rotation between satellite pointing and channel pointing
+    q = image['afsAttitudeState']  # Satellite pointing in ECI
+    rot_sat_eci = R.from_quat(np.roll(q, -1))  # Rotation matrix for q (should go straight to ecef?)
+
+    current_ts = timescale.from_datetime(image["EXPDate"])
+    localR = np.linalg.norm(sfapi.wgs84.latlon(image["TPlat"], image["TPlon"], elevation_m=0).at(current_ts).position.m)
+    eci_to_ecef = R.from_matrix(itrs.rotation_at(current_ts))
+    satpos_eci = image['afsGnssStateJ2000'][0:3]
+    satpos_ecef = eci_to_ecef.apply(satpos_eci)
+    los = []
+    for column in columns:
+        los_col = []
+        for row in rows:
+            los_ecef = get_los_ecef(image, column, row, rot_sat_channel, rot_sat_eci, eci_to_ecef)
+            posecef_i_sph, weights = get_steps_in_local_grid(image, ecef_to_local, satpos_ecef,
+                                                             los_ecef, localR, do_abs=False)
+            los_col.append(posecef_i_sph)
+        los.append(los_col.copy())
+    toc = time.time()
+    logging.log(15, f"LOS calculated for image {image['num_image']} in {toc - tic:.3f} s.")
+    return los
+
+
+def calc_obs(jb, processes):
+    res = multiprocess(calc_obs_image, jb["data"], jb["image_vars"], processes,
+                       [jb["columns"], jb["rows"]], unzip=True)
+    return np.stack(res[:2], axis=0), res[2]
+
+
+def calc_obs_image(image, common_args):
+    tic = time.time()
+    columns, rows = common_args
+    image_profiles = [[], []]
+    image_tanalts = []
+    for column in columns:
+        s_profiles, s_tanalt = prepare_profiles(image, ("IR1c", "IR2c"), column, rows)
+        for i in range(2):
+            image_profiles[i].append(s_profiles[i])
+        image_tanalts.append(s_tanalt)
+    toc = time.time()
+    logging.log(15, f"Observations processed for image {image['num_image']} in {toc - tic:.3f} s.")
+    return image_profiles[0], image_profiles[1], image_tanalts
+
+
+def calc_K(jb, rt_data, o2, atm, valid_obs, processes, fx_only=False):
+    res = multiprocess(calc_K_image, jb["data"], jb["image_vars"], processes,
+                       [jb["edges"], jb["is_regular_grid"], jb["columns"], jb["rows"], jb["ecef_to_local"],
+                        jb["rad_grid"], jb["alongtrack_grid"], jb["acrosstrack_grid"], jb["excludeK"], o2, atm,
+                        rt_data, valid_obs, fx_only], unzip=False)
+
+    K, fx = [], []
+    for i in range(2):
+        fx.append(np.array(list(chain.from_iterable([profiles[i] for _, profiles in res]))))
+        if not fx_only:
+            K.append(sp.vstack([k_part[i] for k_part, _ in res]))
+    return None if fx_only else sp.vstack(K), np.stack(fx, axis=0)
+
+
+def calc_K_image(image, common_args):
+    edges, is_regular_grid, columns, rows, ecef_to_local, rad_grid, alongtrack_grid, acrosstrack_grid, excludeK, o2, \
+        atm, rt_data, valid_obs, fx_only = common_args
+
+    image_calc_profiles = [[], []]
+    image_K = []
+    valid_obs_im = valid_obs[image["num_image"], :, :]
+
+    image["los"] = calc_los_image(image, (columns, rows, ecef_to_local))
+
+    if fx_only:
+        pname = "Forward model"
+    else:
+        pname = "Jacobian"
+        for i in range(2):
+            image_K.append(sp.lil_array((len(rows) * len(columns),
+                           2 * (len(rad_grid) - 1) * (len(alongtrack_grid) - 1) * (len(acrosstrack_grid) - 1))))
+
+    image_k_row = 0
+    tic = time.time()
+    for i, column in enumerate(columns):
+        for j, row in enumerate(rows):
+            if valid_obs_im[i, j]:
+                if fx_only:
+                    ircalc = calc_rad_ng(image["los"][i][j], stepsize, o2, atm, rt_data, edges)
+                else:
+                    ircalc, VERgrad, TEMPgrad = calc_rad2(image["los"][i][j], stepsize, o2, atm, rt_data, edges)
+                    if excludeK is not None:
+                        VERgrad[:, excludeK] = 0.0
+                        TEMPgrad[:, excludeK] = 0.0
+                    for ch in range(2):
+                        k_row_c = np.hstack([VERgrad[ch, ...].reshape(-1), TEMPgrad[ch, ...].reshape(-1)])
+                        image_K[ch][image_k_row, :] = k_row_c.reshape(-1)
+            else:
+                ircalc = [0.0, 0.0]
+            image_k_row += 1
+            for ch in range(2):
+                image_calc_profiles[ch].append(ircalc[ch])
+        if i == 0:
+            toc = time.time()
+            logging.log(15, f"{pname}: Started image {image['num_image']}, ETA {(toc - tic) * len(columns):.3f} s.")
+    toc = time.time()
+    logging.log(15, f"{pname}: Image {image['num_image']} processed in {toc-tic:.1f} s.")
+    return image_K, image_calc_profiles
+
+
+def calc_T_jacobian(jb, rt_data, o2, atm, processes=4, sim_rad_only=False, y_only=False, test_LOS=False):
     # -*- coding: utf-8 -*-
     """Calculate Jacobian.
 
@@ -597,7 +825,8 @@ def calc_T_jacobian(jb, rt_data, o2, atm, processes=4):
 
     Args:
         df (pandas dataframe): data.
-        coluns (array): columns to use.
+        coluns (array): co[[], []]
+lumns to use.
         rows: rows to use
 
     Returns:
@@ -610,12 +839,12 @@ def calc_T_jacobian(jb, rt_data, o2, atm, processes=4):
 
     """
     # per_image_args = [(i, jb["df"].loc[i], jb["df"].iloc[i], jb["df"]['EXPDate'][i]) for i in range(len(jb["df"]))]
-    image_vars = ['CCDSEL', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'NROW',
+    image_vars = ['CCDSEL', 'NCnp.stack(fx, axis=0)SKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'NROW',
                   'EXPDate', 'qprime', 'afsGnssStateJ2000', 'afsAttitudeState',
                   "IR1c", "IR2c", "TPlon", "TPlat", "TEXPMS"]
     per_image_args = [get_image(jb["data"], i, image_vars) for i in range(jb["data"]["size"])]
     common_args = (jb["edges"], jb["is_regular_grid"], jb["columns"], jb["rows"], jb["ecef_to_local"], jb["rad_grid"],
-                   jb["alongtrack_grid"], jb["acrosstrack_grid"], o2, atm, rt_data)
+                   jb["alongtrack_grid"], jb["acrosstrack_grid"], o2, atm, rt_data, sim_rad_only, y_only)
     time0 = time.time()
     assert processes >= 1
     if processes == 1:
@@ -628,24 +857,69 @@ def calc_T_jacobian(jb, rt_data, o2, atm, processes=4):
         with Pool(processes=processes) as pool:
             results = pool.starmap(image_T_jacobian, zip(per_image_args, repeat(common_args)))
     time1 = time.time()
+    # breakpoint()
     print("Assembling sparse Jacobian matrix...")
     K, y, fx = [], [], []
     for i in range(2):
-        K.append(sp.vstack([k_part[i] for k_part, _, _, _ in results]))
+        if not sim_rad_only:
+            K.append(sp.vstack([k_part[i] for k_part, _, _, _ in results]))
         y.append(np.array(list(chain.from_iterable([profiles[i] for _, profiles, _, _ in results]))))
-        fx.append(np.array(list(chain.from_iterable([profiles[i] for _, _, profiles, _ in results]))))
+        if not y_only:
+            fx.append(np.array(list(chain.from_iterable([profiles[i] for _, _, profiles, _ in results]))))
     tan_alts = np.array(list(chain.from_iterable([profiles for _, _, _, profiles in results])))
 
     time2 = time.time()
     print(f"Jacobian contribution from {jb['data']['size']} images calculated in {time1 - time0:.3f} s.")
     print(f"Results assembled to a sparse matrix in {time2 - time1:.3f} s.")
-    return np.stack(y, axis=0), sp.vstack(K), np.stack(fx, axis=0), tan_alts
+    return np.stack(y, axis=0), None if sim_rad_only else sp.vstack(K),\
+           None if y_only else np.stack(fx, axis=0), tan_alts
+
+
+def dg_T_jacobian(jb, rt_data, o2, atm):
+    # per_image_args = [(i, jb["df"].loc[i], jb["df"].iloc[i], jb["df"]['EXPDate'][i]) for i in range(len(jb["df"]))]
+    image_vars = ['CCDSEL', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'NROW',
+                  'EXPDate', 'qprime', 'afsGnssStateJ2000', 'afsAttitudeState',
+                  "IR1c", "IR2c", "TPlon", "TPlat", "TEXPMS"]
+    image = get_image(jb["data"], 0, image_vars)
+    common_args = (jb["edges"], jb["is_regular_grid"], jb["columns"], jb["rows"], jb["ecef_to_local"], jb["rad_grid"],
+                   jb["alongtrack_grid"], jb["acrosstrack_grid"], o2, atm, rt_data)
+    edges, grid_is_regular, columns, rows, ecef_to_local, altitude_grid, \
+        alongtrack_grid, acrosstrack_grid, o2, atm, rt_data = common_args
+
+    rot_sat_channel = R.from_quat(image['qprime'])  # Rotation between satellite pointing and channel pointing
+    q = image['afsAttitudeState']  # Satellite pointing in ECI
+    rot_sat_eci = R.from_quat(np.roll(q, -1))  # Rotation matrix for q (should go straight to ecef?)
+
+    current_ts = timescale.from_datetime(image["EXPDate"])
+    localR = np.linalg.norm(sfapi.wgs84.latlon(image["TPlat"], image["TPlon"], elevation_m=0).at(current_ts).position.m)
+    eci_to_ecef = R.from_matrix(itrs.rotation_at(current_ts))
+    satpos_eci = image['afsGnssStateJ2000'][0:3]
+    satpos_ecef = eci_to_ecef.apply(satpos_eci)
+    current_ts = timescale.from_datetime(image["EXPDate"])
+    localR = np.linalg.norm(sfapi.wgs84.latlon(image["TPlat"], image["TPlon"], elevation_m=0).at(current_ts).position.m)
+    eci_to_ecef = R.from_matrix(itrs.rotation_at(current_ts))
+    satpos_eci = image['afsGnssStateJ2000'][0:3]
+    satpos_ecef = eci_to_ecef.apply(satpos_eci)
+
+
+    column = 22
+    s_profiles, s_tanalt = prepare_profiles(image, ("IR1c", "IR2c"), column, rows)
+    for irow in rows:
+        if irow % 10 != 0:
+            continue
+        los_ecef = get_los_ecef(image, column, irow, rot_sat_channel, rot_sat_eci, eci_to_ecef)
+        posecef_i_sph, weights = get_steps_in_local_grid(image, ecef_to_local, satpos_ecef, los_ecef, localR,
+                                                        do_abs=False)
+        taus, ems, ver = diag_rad_ng(posecef_i_sph, stepsize, o2, atm, rt_data, edges)
+        np.savez(f"diag_{irow}.npz", ems=ems, taus=taus, tanalt=np.array([s_tanalt[irow]]),
+                 pos=posecef_i_sph, localR=np.array([localR]), ver=ver)
+        print(f"Row {irow}  had tangent altitude of {s_tanalt[irow]:.2f}.")
 
 
 def image_T_jacobian(image, common_args):
     # i, loc, iloc, expDate = per_image_arg
     edges, grid_is_regular, columns, rows, ecef_to_local, altitude_grid, \
-        alongtrack_grid, acrosstrack_grid, o2, atm, rt_data = common_args
+        alongtrack_grid, acrosstrack_grid, o2, atm, rt_data, sim_rad_only, y_only = common_args
 
     print(f"Processing of image {image['num_image']} started.")
     tic = time.time()
@@ -677,29 +951,78 @@ def image_T_jacobian(image, common_args):
         image_tanalts.append(s_tanalt)
         # profiles_done = time.time()
         toc = time.time()
-        print(f"Image {image['num_image']}, starting on column {column} of {len(columns)}, {toc - tic:.3f} s so far.")
-        for irow in rows:
-            # print(f"Starting row {irow} ...")
-            # row_start = time.time()
-            los_ecef = get_los_ecef(image, column, irow, rot_sat_channel, rot_sat_eci, eci_to_ecef)
-            posecef_i_sph, weights = get_steps_in_local_grid(image, ecef_to_local, satpos_ecef, los_ecef, localR,
+        eta = "unknown" if column == 0 else f"{(toc - tic) * len(columns) / column:.3f} s"
+        if not y_only:
+            print(f"Image {image['num_image']}, starting on column {column} of {len(columns)}, projected total image proc. time: {eta}.")
+            for irow in rows:
+                # print(f"Starting row {irow} ...")
+                # row_start = time.time()
+                los_ecef = get_los_ecef(image, column, irow, rot_sat_channel, rot_sat_eci, eci_to_ecef)
+                posecef_i_sph, weights = get_steps_in_local_grid(image, ecef_to_local, satpos_ecef, los_ecef, localR,
                                                              do_abs=False)
-            # geometry_done = time.time()
-            ircalc, VERgrad, TEMPgrad = calc_rad2(posecef_i_sph, stepsize, o2, atm, rt_data, edges)
-            # rt_done = time.time()
-            for ch in range(2):
-                k_row_c = np.hstack([VERgrad[ch, ...].reshape(-1), TEMPgrad[ch, ...].reshape(-1)])
-                image_K[ch][image_k_row, :] = k_row_c.reshape(-1)
-                image_calc_profiles[ch].append(ircalc[ch])
+                # geometry_done = time.time()
+                if sim_rad_only:
+                    ircalc = calc_rad_ng(posecef_i_sph, stepsize, o2, atm, rt_data, edges)
+                else:
+                    ircalc, VERgrad, TEMPgrad = calc_rad2(posecef_i_sph, stepsize, o2, atm, rt_data, edges)
+                # rt_done = time.time()
+                for ch in range(2):
+                    if not sim_rad_only:
+                        k_row_c = np.hstack([VERgrad[ch, ...].reshape(-1), TEMPgrad[ch, ...].reshape(-1)])
+                        image_K[ch][image_k_row, :] = k_row_c.reshape(-1)
+                    image_calc_profiles[ch].append(ircalc[ch])
             # K_amended = time.time()
             # print(f"Row {irow} done:")
             # print(f"Geometry: {geometry_done-row_start:.3f} s, RT: {rt_done - geometry_done:.3f} s," +
             #      f"matrix write:  {K_amended - rt_done:.3f} s")
-        image_k_row += 1
+                image_k_row += 1
 
     toc = time.time()
     print(f"Image {image['num_image']} processed in {toc-tic:.1f} s.")
     return image_K, image_profiles, image_calc_profiles, image_tanalts
 
+
+def iter_T_jacobian(image, common_args):
+    # i, loc, iloc, expDate = per_image_arg
+    edges, grid_is_regular, columns, rows, ecef_to_local, altitude_grid, \
+        alongtrack_grid, acrosstrack_grid, o2, atm, rt_data, sim_rad_only, y_only = common_args
+
+    print(f"Processing of image {image['num_image']} started.")
+    tic = time.time()
+
+    image_calc_profiles = [[], []]
+    image_K = []
+    for i in range(2):
+        image_K.append(sp.lil_array((len(rows) * len(columns),
+                       2 * (len(altitude_grid) - 1) * (len(alongtrack_grid) - 1) * (len(acrosstrack_grid) - 1))))
+    image_k_row = 0
+
+    rot_sat_channel = R.from_quat(image['qprime'])  # Rotation between satellite pointing and channel pointing
+    q = image['afsAttitudeState']  # Satellite pointing in ECI
+    rot_sat_eci = R.from_quat(np.roll(q, -1))  # Rotation matrix for q (should go straight to ecef?)
+
+    current_ts = timescale.from_datetime(image["EXPDate"])
+    localR = np.linalg.norm(sfapi.wgs84.latlon(image["TPlat"], image["TPlon"], elevation_m=0).at(current_ts).position.m)
+    eci_to_ecef = R.from_matrix(itrs.rotation_at(current_ts))
+    satpos_eci = image['afsGnssStateJ2000'][0:3]
+    satpos_ecef = eci_to_ecef.apply(satpos_eci)
+
+    for column in columns:
+        toc = time.time()
+        eta = "unknown" if column == 0 else f"{(toc - tic) * len(columns) / column:.3f} s"
+        print(f"Image {image['num_image']}, starting on column {column} of {len(columns)}, projected total image proc. time: {eta}.")
+        for irow in rows:
+            los_ecef = get_los_ecef(image, column, irow, rot_sat_channel, rot_sat_eci, eci_to_ecef)
+            posecef_i_sph, weights = get_steps_in_local_grid(image, ecef_to_local, satpos_ecef, los_ecef, localR, do_abs=False)
+            ircalc, VERgrad, TEMPgrad = calc_rad2(posecef_i_sph, stepsize, o2, atm, rt_data, edges)
+            for ch in range(2):
+                k_row_c = np.hstack([VERgrad[ch, ...].reshape(-1), TEMPgrad[ch, ...].reshape(-1)])
+                image_K[ch][image_k_row, :] = k_row_c.reshape(-1)
+                image_calc_profiles[ch].append(ircalc[ch])
+            image_k_row += 1
+
+    toc = time.time()
+    print(f"Image {image['num_image']} processed in {toc-tic:.1f} s.")
+    return image_K, image_calc_profiles
 
 # %%
