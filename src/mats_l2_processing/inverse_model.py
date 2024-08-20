@@ -3,11 +3,9 @@ import mats_l2_processing.oem as oem
 import scipy.sparse as sp
 from scipy.interpolate import CubicSpline
 import time
-from mats_l2_processing.grids import L2_write_init, L2_write_iter
+from mats_l2_processing.io import L2_write_init, L2_write_iter
 from mats_l2_processing.forward_model import calc_K
-from scipy import stats
 import logging
-import sys
 
 
 def generate_xa_from_gaussian(altgrid, width=5000, meanheight=90000):
@@ -94,7 +92,8 @@ def tikhonov_laplacian_op(grids, volume_factors, aspect_ratio=None):
         if volume_factors is not None:
             diag_main, diag_up, diag_down = [arr * volume_factors
                                              for arr in [diag_main, diag_up, diag_down]]
-        L += aspect_ratio[axis] * sp.diags([diag_down[step:], diag_main, diag_up[:-step]], offsets=[-step, 0, step], dtype='float32')
+        L += aspect_ratio[axis] * sp.diags([diag_down[step:], diag_main, diag_up[:-step]],
+                                           offsets=[-step, 0, step], dtype='float32')
     return L
 
 
@@ -282,9 +281,12 @@ def limit_alt(jb, y, tan_alts, alt_range):
     return y_ar, valid_alt
 
 
-def lm_solve(atm_apr, y, tan_alts, Seinv, Sainv, terms, scales, bounds, alt_range,
-             lm_par_0, lm_fac, conv_criterion, jb, rt_data, o2, nproc, prefix,
-             it_max=5, fact_max=3, save_K=False):
+def lm_solve(atm_apr, y, tan_alts, Seinv, Sainv, terms, conf, jb, rt_data, o2, nproc, prefix,
+             save_K=False, load_K=False):
+    scales = (conf.VER_SCALE, conf.T_SCALE)
+    bounds = (conf.VER_BOUNDS, conf.T_BOUNDS)
+
+    lm_start_time = time.time()
 
     # Initializing common variables
     channels, atm_vars = ["IR1", "IR2"], ["VER", "T"]
@@ -293,29 +295,39 @@ def lm_solve(atm_apr, y, tan_alts, Seinv, Sainv, terms, scales, bounds, alt_rang
     assert len(bounds) == len(scales)
     xa = np.hstack([atm_apr[i].flatten() / scales[i] for i in range(len(scales))])
     xsc = np.hstack([sc * np.ones(atm_size) for sc in scales])
-    y_ar, valid_alt = limit_alt(jb, y, tan_alts, alt_range)
+    y_ar, valid_alt = limit_alt(jb, y, tan_alts, conf.TP_ALT_RANGE)
 
     # Initializing iteration variables
     xp = xa
-    lm_par = lm_par_0
+    lm_par = conf.LM_PAR_0
     K = None
 
     # Main iteration
-    for it in range(1, it_max + 1):
-        del K
+    for it in range(1, conf.LM_IT_MAX + 1):
         sols, cfs, fxs = [], [], []
-        K, fxp = calc_K(jb, rt_data, o2, x2atm(xp, atm_shape, scales), valid_alt, nproc)
-        if save_K:
-            sp.save_npz(f"{prefix}_{it}_K.npz", K)
+        if it == 1 and load_K:
+            K = sp.load_npz(f"{prefix}_1_K.npz")
+            fxp = np.load(f"{prefix}_1_fxp.npz")
+            logging.info("Jacobian loaded from file.")
+        else:
+            K, fxp = calc_K(jb, rt_data, o2, x2atm(xp, atm_shape, scales), valid_alt, nproc)
         if it == 1:
+            if save_K and not load_K:
+                sp.save_npz(f"{prefix}_{it}_K.npz", K)
+                with open(f"{prefix}_{it}_fxp.npz", 'wb') as f:
+                    np.save(f, fxp)
+
             L2_write_init(jb, prefix, atm_apr, y, fxp, np.reshape(tan_alts, (-1, len(jb["columns"]), len(jb["rows"]))),
-                          jb["k_alt_range"], alt_range)
+                          jb["k_alt_range"], conf.TP_ALT_RANGE)
             cf_p = oem.cost_func(xa, xa, y_ar, fxp.flatten(), Seinv, Sainv)
             logging.info(f"Initial misfit: {cf_p:.2e}")
 
-        lms = [lm_par * float(lm_fac) ** x for x in range(-1, fact_max + 1)]
+        lm_prep_data = oem.mkl_lm_prep(K, xsc, Sainv, Seinv)
+        del K
+        lms = [lm_par * float(conf.LM_FAC) ** x for x in range(-1, conf.LM_MAX_FACTS_PER_ITER + 1)]
         for j, lm in enumerate(lms):
-            xhat = oem.lm_iter(xa, xsc, xp, y_ar, fxp.flatten(), K, Seinv, Sainv, lm)
+            # xhat = oem.lm_iter(xa, xsc, xp, y_ar, fxp.flatten(), K, Seinv, Sainv, lm)
+            xhat = oem.mkl_iter_wprep(xa, xp, y_ar, fxp.flatten(), Sainv, Seinv, lm, lm_prep_data, conf)
             sols.append(reset_invalid(xhat, scales, bounds))
             fxs.append(calc_K(jb, rt_data, o2, x2atm(sols[-1], atm_shape, scales), valid_alt, nproc, fx_only=True)[1])
             cfs.append(oem.cost_func(xa, sols[-1], y_ar, fxs[-1].flatten(), Seinv, Sainv))
@@ -332,8 +344,8 @@ def lm_solve(atm_apr, y, tan_alts, Seinv, Sainv, terms, scales, bounds, alt_rang
                         raise RuntimeError("Solution failed to converge!")
                     continue
                 else:
-                    converged = (cf_ratio > conv_criterion)
-                    final = converged or (it == it_max)
+                    converged = (cf_ratio > conf.CONV_CRITERION)
+                    final = converged or (it == conf.LM_IT_MAX)
                     if converged and (best_idx == len(sols) - 1):
                         continue
                     xp, fxp, lm_par, cf_p = sols[best_idx], fxs[best_idx], lms[best_idx], min_cf
@@ -343,4 +355,5 @@ def lm_solve(atm_apr, y, tan_alts, Seinv, Sainv, terms, scales, bounds, alt_rang
                     if not final:
                         break
                     logging.info("Convergence reached!" if converged else "Max. number of iterations reached!")
+                    logging.info(f"Total LM run time: {time.time() - lm_start_time} s.")
                     return

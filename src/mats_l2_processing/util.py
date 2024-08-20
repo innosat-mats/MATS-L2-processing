@@ -1,0 +1,57 @@
+import datetime as DT
+from multiprocessing import Pool
+import numpy as np
+from itertools import chain, repeat
+
+
+def get_filter(channel):
+    filters = {"IR1": 1, "IR2": 4, "IR3": 3, "IR4": 2, "UV1": 5, "UV2": 6}
+    try:
+        filt = filters[channel]
+    except Exception:
+        raise ValueError(f"Invalid channel: {channel}!")
+
+    return {'CCDSEL': [filt, filt]}
+
+
+def DT2seconds(dts):
+    return (dts - DT.datetime(2000, 1, 1, 0, 0, tzinfo=DT.timezone.utc)) / DT.timedelta(0, 1)
+
+
+def get_image(data, idx, var):
+    res = {"num_image": idx}
+    for v in var:
+        if hasattr(data[v], 'shape') and len(data[v].shape) > 1:
+            res[v] = data[v][idx, ...]
+        else:
+            res[v] = data[v][idx]
+    return res
+
+
+def multiprocess(func, dataset, image_args, nproc, common_args, unzip=False):
+    assert nproc >= 1, "Invalid number of processes specified!"
+    images = [get_image(dataset, i, image_args) for i in range(dataset["size"])]
+    if nproc == 1:  # Serial processing (implemented separately to simplify debugging)
+        res = []
+        for image in images:
+            res.append(func(image, common_args))
+    else:  # Actual multiprocessing
+        with Pool(processes=nproc) as pool:
+            res = pool.starmap(func, zip(images, repeat(common_args)))
+
+    if unzip:
+        unzipped = []
+        for i in range(len(res[0])):
+            unzipped.append(np.array(list(chain.from_iterable([image_res[i] for image_res in res]))))
+        return unzipped
+    else:
+        return res
+
+
+def print_times(times, titles):
+    assert len(titles) + 1 == len(times)
+    res = ""
+    for i, title in enumerate(titles):
+        res += f"{title}: {times[i + 1] - times[i]:.3e} s, "
+    res += f" {times[-1] - times[0]:.3e} s total."
+    print(res)

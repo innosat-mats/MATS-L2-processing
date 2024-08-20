@@ -1,7 +1,9 @@
 import numpy as np
-from numba import jit
-import datetime as DT
-import netCDF4 as nc
+from mats_l1_processing.pointing import pix_deg
+from mats_l2_processing.util import get_image
+from scipy.spatial.transform import Rotation as R
+from skyfield import api as sfapi
+from skyfield.framelib import itrs
 import logging
 
 
@@ -15,14 +17,14 @@ def geoid_radius(latitude):
             Craig Haley 11-06-04
     ---------------------------------------------------------------
     '''
-    DEGREE = np.pi / 180.0
+    # DEGREE = np.pi / 180.0
     EQRAD = 6378.14 * 1000
     FLAT = 1.0 / 298.257
     Rmax = EQRAD
     Rmin = Rmax * (1.0 - FLAT)
-    Re = np.sqrt(1./(np.cos(latitude)**2/Rmax**2
-                + np.sin(latitude)**2/Rmin**2))
+    Re = np.sqrt(1. / (np.cos(latitude)**2 / Rmax**2 + np.sin(latitude)**2 / Rmin**2))
     return Re
+
 
 def sph2cart(r, phi, theta):
     x = r * np.cos(theta) * np.cos(phi)
@@ -30,40 +32,16 @@ def sph2cart(r, phi, theta):
     z = r * np.sin(theta)
     return x, y, z
 
-@jit(nopython=True,cache=True)
+
 def cart2sph(pos):
-    x = pos[:,0]
-    y = pos[:,1]
-    z = pos[:,2]
+    x = pos[:, 0]
+    y = pos[:, 1]
+    z = pos[:, 2]
     radius = np.sqrt(x**2 + y**2 + z**2)
     longitude = np.arctan2(y, x)
     latitude = np.arcsin(z / radius)
 
-    return radius,longitude,latitude
-
-
-def localgrid_to_lat_lon_alt_3D(radius_grid,acrosstrack_grid,alongtrack_grid,ecef_to_local):
-    arrayshape = (len(radius_grid),len(acrosstrack_grid),len(alongtrack_grid))
-    non_uniform_ecef_grid_x = np.zeros(arrayshape)
-    non_uniform_ecef_grid_y = np.zeros(arrayshape)
-    non_uniform_ecef_grid_z = np.zeros(arrayshape)
-
-    non_uniform_ecef_grid_altitude = np.zeros(arrayshape)
-    non_uniform_ecef_grid_r = np.zeros(arrayshape)
-    non_uniform_ecef_grid_lat = np.zeros(arrayshape)
-    non_uniform_ecef_grid_lon = np.zeros(arrayshape)
-
-    for i in range(arrayshape[0]):
-        for j in range(arrayshape[1]):
-            for k in range(arrayshape[2]):
-                non_uniform_ecef_grid_x[i,j,k],non_uniform_ecef_grid_y[i,j,k],non_uniform_ecef_grid_z[i,j,k]=ecef_to_local.inv().apply(sph2cart(radius_grid[i],acrosstrack_grid[j],alongtrack_grid[k]))
-                ecef_r_lon_lat = cart2sph(np.array([[non_uniform_ecef_grid_x[i,j,k],non_uniform_ecef_grid_y[i,j,k],non_uniform_ecef_grid_z[i,j,k]]]))
-                non_uniform_ecef_grid_r[i,j,k] = ecef_r_lon_lat[0][0]
-                non_uniform_ecef_grid_lon[i,j,k] = ecef_r_lon_lat[1][0]
-                non_uniform_ecef_grid_lat[i,j,k] = ecef_r_lon_lat[2][0]
-                non_uniform_ecef_grid_altitude[i,j,k] = non_uniform_ecef_grid_r[i,j,k]-geoid_radius(non_uniform_ecef_grid_lat[i,j,k])
-
-    return non_uniform_ecef_grid_altitude,non_uniform_ecef_grid_lon,non_uniform_ecef_grid_lat,non_uniform_ecef_grid_r
+    return radius, longitude, latitude
 
 
 def center_grid(grid):
@@ -81,216 +59,236 @@ def get_alt_lat_lon(radius_grid, acrosstrack_grid, alongtrack_grid, ecef_to_loca
     return altt, latt, lonn
 
 
-def DT2seconds(dts):
-    return (dts - DT.datetime(2000, 1, 1, 0, 0, tzinfo=DT.timezone.utc)) / DT.timedelta(0, 1)
-
-
-def write_aux(jb, y, fx, tan_alts, atm_apr, prefix):
-    # Centre grid (the working grid for Jacobian contains grid edges)
-    #rad_grid_c, alongtrack_grid_c, acrosstrack_grid_c = [center_grid(jb[x]) for x in
-    #                                                     ["rad_grid", "alongtrack_grid", "acrosstrack_grid"]]
-    # Create alt/lat/lon grid for grid centres
-    # alt, lon, lat, rr = localgrid_to_lat_lon_alt_3D(altitude_grid, alongtrack_grid, acrosstrack_grid, ecef_to_local)
-    #alts, lats, lons = get_alt_lat_lon(rad_grid_c, acrosstrack_grid_c,
-    #                                   alongtrack_grid_c, jb["ecef_to_local"])
-    # Save results
-    tan_alts = tan_alts.reshape((-1, jb["data"]["NCOL"][0], len(jb["rows"])))
-    yg, fxg = [arr.reshape((2, -1, jb["data"]["NCOL"][0], len(jb["rows"]))) for arr in [y, fx]]
-    img_time = DT2seconds(jb["data"]["EXPDate"].data).astype(float)
-    # sp.save_npz(f"{args.out_np}_K.npz", K)
-    np.savez_compressed(f"{prefix}_aux.npz", y=yg, fx=fxg, radial_coord=jb["rad_grid_c"],
-                        alongtrack_coord=jb["alongtrack_grid_c"], acrosstrack_coord=jb["acrosstrack_grid_c"],
-                        tan_alts=tan_alts, altitude=jb["alt"], latitude=jb["lat"], longitude=jb["lon"],
-                        img_time=img_time, VER_bgr=atm_apr[0], T_bgr=atm_apr[1])
-
-
-def write_iter(jb, fx, atm, prefix):
-    fxg = fx.reshape((2, -1, jb["data"]["NCOL"][0], jb["data"]["NROW"][0]))
-    # sp.save_npz(f"{args.out_np}_K.npz", K)
-    np.savez_compressed(f"{prefix}_iter.npz", fx=fxg, VER=atm[0], T=atm[1], alongtrack_coord=jb["alongtrack_grid_c"],
-                        acrosstrack_coord=jb["acrosstrack_grid_c"], altitude=jb["alt"])
-
-
-def read_L1_ncdf(filename, var=None, start_img=None, stop_img=None, start_time=None, stop_time=None,
-                 time_var='EXPDate', read_ncattrs=True):
-    res = {}
-    with nc.Dataset(filename, 'r') as nf:
-        # Read in global attributes
-        if type(read_ncattrs) is list:
-            attrs = read_ncattrs
-        else:
-            attrs = nf.ncattrs() if read_ncattrs else []
-        for attr in attrs:
-            res[attr] = nf.getncattr(attr)
-        if (start_img is not None) or (stop_img is not None):
-            start = 0 if start_img is None else start_img
-            stop = -1 if stop_img is None else stop_img
-        elif (start_time is not None) or (stop_time is not None):
-            assert len(nf[time_var].shape) == 1, f"Invalid time variable {time_var} selected."
-            time = DT.datetime(2000, 1, 1, 0, 0, tzinfo=DT.timezone.utc) +\
-                nf[time_var][:] * DT.timedelta(0, 1)
-            start = 0 if start_time is None else np.nanargmin(np.abs(time - start_time))
-            stop = -1 if stop_time is None else np.nanargmin(np.abs(time - stop_time))
-        else:
-            start, stop = 0, -1
-
-        real_stop = stop if stop >= 0 else len(time) + stop
-        assert start < real_stop, f"The selected time interval has no images! Read data for {time[0]} to {time[-1]}"
-        if start_time < time[0] - DT.timedelta(1, 0) or stop_time > time[-1] + DT.timedelta(1, 0):
-            print("WARNING: Data in the input file does not completely cover the selected time interval.")
-
-        if var is None:
-            var = nf.variables
-
-        for name in var:
-            v = nf[name]
-            if hasattr(v, "units") and (v.units == "Seconds since 2000.01.01 00:00 UTC"):
-                res[v.name] = DT.datetime(2000, 1, 1, 0, 0, tzinfo=DT.timezone.utc) +\
-                    v[start:stop, ...] * DT.timedelta(0, 1)
+def make_grid_proto(proto, offset=0.0, scaling=1.0):
+    if (type(proto) is int) or (type(proto) is float):
+        return int(proto)
+    assert type(proto) is list, "Malformed grid specification!"
+    if type(proto[0]) is tuple:
+        for i, interval in enumerate(proto):
+            assert type(interval) is tuple, "Malformed grid specification!"
+            assert len(interval) == 3, "Malformed grid specification!"
+            if i == 0:
+                res = np.arange(*interval)
             else:
-                res[name] = v[start:stop, ...]
-
-        res["size"] = res[var[0]].shape[0]
-        logging.info(f"Read {res['size']} images.")
-    return res
-
-
-def write_L2_ncdf(jb, outfile, atm_vars=[], obs_vars=[], tan_alts=None, atts=[]):
-    # atm_vars should be provided as list of tuples:
-    # (atm, name_suffix, <long name or None for empty>))
-    #
-    # obs_vars should be provided as list of tuples:
-    # (data, name_suffix, <long name or None for empty>))
-
-    # Parsing coordinate data
-    from_jb = [("radial_coord", "rad_grid_c"), ("acrosstrack_coord", "acrosstrack_grid_c"),
-               ("alongtrack_coord", "alongtrack_grid_c"), ("altitude", "alt"), ("longitude", "lon"),
-               ("latitude", "lat"), ("img_col", "columns"), ("img_row", "rows")]
-    res = {}
-    for item in from_jb:
-        to_name, from_name = item if type(item) is tuple else (item, item)
-        res[to_name] = jb[from_name]
-    res["img_time"] = DT2seconds(jb["data"]["EXPDate"].data).astype(float)
-    earth_radius = geoid_radius(0)
-    res["acrosstrack_coord"] *= earth_radius
-    res["alongtrack_coord"] *= earth_radius
-
-    # Define dimensions
-    dim_pars = {"radial_coord": ("Distance from the center of the Earth", "meter"),
-                "acrosstrack_coord": ("Horizontal coordinate in the direction perpendicular to the orbital plane",
-                                      "meter"),
-                "alongtrack_coord": ("Horizontal coordinate in the direction of the satellite track", "meter"),
-                "img_time": ("Acquisition time of individual MATS images", "Seconds since 2000.01.01 00:00 UTC"),
-                "img_col": ("Column of (coadded) pixels in the image", None),
-                "img_row": ("Row of (coadded) pixels in the image", None)}
-    dims_4D = ("time", "radial_coord", "acrosstrack_coord", "alongtrack_coord")
-    dims_2D = ("acrosstrack_coord", "alongtrack_coord")
-
-    # Define coordinate variables
-    ncvars = {"altitude": ("Altitude", "meter", res["altitude"], dims_4D),
-              "longitude": ("Longitude", "degree_east", res["longitude"], dims_2D),
-              "latitude": ("Latitude", "degree_north", res["latitude"], dims_2D)}
-
-    # Write file
-    with nc.Dataset(outfile, 'w') as nf:
-        # Create dimensions and dimension variables
-        for dim, param in dim_pars.items():
-            nf.createDimension(dim, len(res[dim]))
-            ncvar = nf.createVariable(dim, 'f8', (dim,))
-            ncvar.long_name = param[0]
-            if param[1] is not None:
-                ncvar.units = param[1]
-            ncvar[:] = res[dim]
-
-        # Create a dummy time dimension and a variable for valid time of the L2 data product
-        nf.createDimension("time", 1)
-        ncvar = nf.createVariable("time", 'f8', ("time",))
-        ncvar[0] = np.nanmean(res["img_time"][:])
-        ncvar.long_name = "Valid time of L2 data"
-        ncvar.units = "Seconds since 2000.01.01 00:00 UTC"
-
-        # Write coordinate variables
-        for name, param in ncvars.items():
-            ncvar = nf.createVariable(name, 'f8', param[3])
-            ncvar.long_name = param[0]
-            if param[1] is not None:
-                ncvar.units = param[1]
-            ncvar[:] = param[2]
-
-        # Write tangent point heights
-        if tan_alts is not None:
-            ncvar = nf.createVariable("TPheight", 'f8', ("img_time", "img_col", "img_row"))
-            ncvar.long_name = "Tangent point height"
-            ncvar.units = "meter"
-            ncvar[:] = tan_alts
-
-        # Write ncdf attributes
-        if len(atts) > 0:
-            nf.setncatts(atts)
-
-    if not (len(atm_vars) == 0 and len(obs_vars) == 0):
-        append_L2_ncdf(outfile, atm_vars, obs_vars)
-
-
-def append_L2_ncdf(ncfile, atm_vars, obs_vars):
-    # atm_vars should be provided as list of tuples:
-    # (atm, name_suffix, <long name or None for empty>))
-    #
-    # obs_vars should be provided as list of tuples:
-    # (data, name_suffix, <long name or None for empty>))
-
-    dims_4D = ("time", "radial_coord", "acrosstrack_coord", "alongtrack_coord")
-    dims_obs = ("img_time", "img_col", "img_row")
-    defaults = {"VER": ("Volume emission rate", "ph/cm^3/s", None, dims_4D),
-                "T": ("Temperature", "Kelvin", None, dims_4D),
-                "IR1": ("Infrared image channel 1", "ph/cm^2/s/srad", None, dims_obs),
-                "IR2": ("Infrared image channel 2", "ph/cm^2/s/srad", None, dims_obs)}
-    dim_names = ["time", "radial_coord", "acrosstrack_coord", "alongtrack_coord",
-                 "img_time", "img_col", "img_row"]
-
-    ncvars = {}
-
-    with nc.Dataset(ncfile, 'r+') as nf:
-        sizes = {name: len(nf.dimensions[name]) for name in dim_names}
-        atm_shape = (sizes["time"], sizes["radial_coord"], sizes["acrosstrack_coord"], sizes["alongtrack_coord"])
-        obs_shape = (2, sizes["img_time"], sizes["img_col"], sizes["img_row"])
-
-        for data, suffix, long_name in atm_vars:
-            for i, v in enumerate(["VER", "T"]):
-                ncvars[f"{v}{suffix}"] = (None if long_name is None else f"{defaults[v][0]} {long_name}",
-                                          defaults[v][1], data[i].reshape(atm_shape), defaults[v][3])
-
-        for data, suffix, long_name in obs_vars:
-            chn_data = data.reshape(obs_shape)
-            for i, v in enumerate(["IR1", "IR2"]):
-                ncvars[f"{v}{suffix}"] = (None if long_name is None else f"{defaults[v][0]} {long_name}",
-                                          defaults[v][1], chn_data[i, ...], defaults[v][3])
-
-        for name, param in ncvars.items():
-            ncvar = nf.createVariable(name, 'f8', param[3])
-            ncvar.long_name = param[0]
-            if param[1] is not None:
-                ncvar.units = param[1]
-            ncvar[:] = param[2]
-
-
-def L2_write_init(jb, prefix, atm_apr, y, fx, tan_alts, ret_alt_range, tp_alt_range):
-    name = f"{prefix}_L2.nc"
-    atm_vars = [(atm_apr, "_apr", "a priori")]
-    obs_vars = [(y, "", ", MATS observation"), (fx, "_sim_apr", "forward model simulation based on apriori")]
-    atts = {"ret_min_height": ret_alt_range[0], "ret_max_height": ret_alt_range[1], "TP_min_height": tp_alt_range[0],
-            "TP_max_height": tp_alt_range[1]}
-    write_L2_ncdf(jb, name, atm_vars=atm_vars, obs_vars=obs_vars, tan_alts=tan_alts, atts=atts)
-
-
-def L2_write_iter(prefix, atm, fx, numit):
-    name = f"{prefix}_L2.nc"
-    if numit < 0:
-        suffix = ""
-        long_suffix = "final result"
+                res = np.concatenate((res, np.arange(*interval)))
     else:
-        suffix = f"_it_{numit}"
-        long_suffix = f"iteration {numit}"
-    atm_vars = [(atm, suffix, long_suffix)]
-    obs_vars = [(fx, f"_sim{suffix}", f"{long_suffix} forward model simulation")]
-    append_L2_ncdf(name, atm_vars=atm_vars, obs_vars=obs_vars)
+        res = np.array(proto)
+    return res * scaling + offset
+
+
+def generate_grid(data, grid_def, grid_proto=None):
+    # columns, rows, ecef_to_local, top_alt, stepsize, timescale
+    lims = grid_limits(data, grid_def)
+    # print(lims)
+    if grid_proto is None:
+        grid_proto = [lims[i][2] for i in range(3)]
+    result = []
+    for i in range(3):
+        if (type(grid_proto[i]) is int) or (type(grid_proto[i]) is float):
+            grid_len = int(grid_proto[i])
+            assert grid_len > 0, "Malformed grid_spec parameter!"
+            result.append(np.linspace(lims[i][0], lims[i][1], grid_len))
+        elif isinstance(grid_proto[i], np.ndarray):
+            assert len(grid_proto[i].shape) == 1
+            result.append(grid_proto[i][np.logical_and(grid_proto[i] > lims[i][0], grid_proto[i] < lims[i][1])])
+        else:
+            raise ValueError(f"Malformed grid_spec parameter: {type(grid_proto[i])}")
+    return result
+
+
+def get_los_ecef(image, icol, irow, rot_sat_channel, rot_sat_eci, eci_to_ecef):
+    # Angles for single pixel
+    x, y = pix_deg(image, icol, irow)
+    # Rot matrix between pixel pointing and channels pointing
+    rotation_channel_pix = R.from_euler('xyz', [0, y, x], degrees=True).apply([1, 0, 0])
+    los_eci = np.array(rot_sat_eci.apply(rot_sat_channel.apply(rotation_channel_pix)))
+    los_ecef = eci_to_ecef.apply(los_eci)
+    return los_ecef
+
+
+def get_steps_in_local_grid(image, grid_def, satpos_ecef, los_ecef, localR=None, do_abs=False):
+
+    if localR is None:
+        date = image['EXPDate']
+        current_ts = grid_def["timescale"].from_datetime(date)
+        localR = np.linalg.norm(sfapi.wgs84.latlon(image["TPlat"], image["TPlon"],
+                                                   elevation_m=0).at(current_ts).position.m)
+
+    s_steps = generate_steps(grid_def["stepsize"], grid_def["top_alt"], localR, satpos_ecef, los_ecef)
+
+    posecef = (np.expand_dims(satpos_ecef, axis=0).T + s_steps * np.expand_dims(los_ecef, axis=0).T).astype('float32')
+    poslocal = grid_def["ecef_to_local"].apply(posecef.T)  # convert to local (for middle alongtrack measurement)
+    poslocal_sph = cart2sph(poslocal)
+    poslocal_sph = np.array(poslocal_sph).T
+    if do_abs:
+        raise NotImplementedError("This method of absorbtion calculation is no longer in use")
+        # weights = get_weights(poslocal_sph, s_steps, localR)
+    else:
+        weights = np.ones((poslocal_sph.shape[0]))
+
+    return poslocal_sph, weights
+
+
+def grid_limits(data, grid_def):
+
+    first = 0
+    mid = int((data["size"] - 1) / 2)
+    last = data["size"] - 1
+
+    mid_date = data['EXPDate'][mid]
+    current_ts = grid_def["timescale"].from_datetime(mid_date)
+    localR = np.linalg.norm(sfapi.wgs84.latlon(data["TPlat"][mid], data["TPlon"][mid],
+                                               elevation_m=0).at(current_ts).position.m)
+
+    rot_sat_channel = R.from_quat(data['qprime'][mid, :])  # Rotation between satellite pointing and channel pointing
+
+    q = data['afsAttitudeState'][mid, :]  # Satellite pointing in ECI
+    rot_sat_eci = R.from_quat(np.roll(q, -1))  # Rotation matrix for q (should go straight to ecef?)
+
+    eci_to_ecef = R.from_matrix(itrs.rotation_at(current_ts))
+    satpos_eci = data['afsGnssStateJ2000'][mid, 0:3]
+    satpos_ecef = eci_to_ecef.apply(satpos_eci)
+
+    # change to do only used columns and rows
+    if len(grid_def["columns"]) == 1:
+        mid_col = grid_def["columns"][0]
+    else:
+        left_col = grid_def["columns"][0]
+        right_col = grid_def["columns"][-1]
+        mid_col = int((left_col + right_col) / 2)
+        # mid_col = int(data["NCOL"][0] / 2) - 1
+        # right_col = data["NCOL"][0] - 1
+
+    irow = grid_def["rows"][0]
+    poslocal_sph = []
+
+    get_los_vars = ['CCDSEL', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'EXPDate', 'TPlat', 'TPlon']
+    # Which localR to use in get_step_local_grid?
+    for idx in [first, mid, last]:
+        image = get_image(data, idx, get_los_vars)
+        los_ecef = get_los_ecef(image, mid_col, irow, rot_sat_channel, rot_sat_eci, eci_to_ecef)
+        poslocal_sph.append(get_steps_in_local_grid(image, grid_def, satpos_ecef, los_ecef, localR=None)[0])
+
+    if len(grid_def["columns"]) > 1:
+        for col in [left_col, right_col]:
+            for idx in [first, mid, last]:
+                image = get_image(data, idx, get_los_vars)
+                los_ecef = get_los_ecef(image, col, irow, rot_sat_channel, rot_sat_eci,
+                                        eci_to_ecef)
+                poslocal_sph.append(get_steps_in_local_grid(image, grid_def, satpos_ecef, los_ecef, localR=None)[0])
+
+    poslocal_sph = np.vstack(poslocal_sph)
+    # max_rad = poslocal_sph[:, 0].max()
+    min_rad = poslocal_sph[:, 0].min()
+    max_along = poslocal_sph[:, 2].max()
+    min_along = poslocal_sph[:, 2].min()
+    max_across = poslocal_sph[:, 1].max()
+    min_across = poslocal_sph[:, 1].min()
+    if len(grid_def["columns"]) < 2:
+        max_across = max_across + 0.2
+        min_across = min_across - 0.2
+
+    nalt = int(len(grid_def["rows"] / 2)) + 2
+    nacross = int(len(grid_def["columns"] / 2)) + 2
+    nalong = int(data["size"] / 2) + 2
+
+    if (nacross - 2) < 2:
+        nacross = 2
+    if (nalong - 2) < 2:
+        nalong = 2
+
+    return (min_rad - 10e3, localR + grid_def["top_alt"] + 10e3, nalt), (min_across - 0.1, max_across + 0.1, nacross), \
+        (min_along - 0.6, max_along + 0.6, nalong)
+
+
+def generate_steps(stepsize, top_altitude, localR, satpos, losvec):
+    distance_top_of_atmosphere = find_top_of_atmosphere(top_altitude, localR, satpos, losvec)
+    steps = np.arange(distance_top_of_atmosphere[0], distance_top_of_atmosphere[1], stepsize)
+    return steps
+
+
+def find_top_of_atmosphere(top_altitude, localR, satpos, losvec):
+    sat_radial_pos = np.linalg.norm(satpos)
+    los_zenith_angle = np.arccos(np.dot(satpos, losvec) / sat_radial_pos)
+    # solving quadratic equation to find distance start and end of atmosphere
+    b = 2 * sat_radial_pos * np.cos(los_zenith_angle)
+    root = np.sqrt(b**2 + 4 * ((top_altitude + localR)**2 - sat_radial_pos**2))
+    distance_top_1 = (-b - root) / 2
+    distance_top_2 = (-b + root) / 2
+
+    return [distance_top_1, distance_top_2]
+
+
+# def eci_to_ecef_transform(date):
+#     return R.from_matrix(itrs.rotation_at(timescale.from_datetime(date)))
+
+
+def generate_local_transform(data, timescale):
+    """Calculate the transform from ecef to the local coordinate system.
+
+    Detailed descriptiongg
+
+    Args:
+        df (pandas dataframe): data.
+
+    Returns:
+        ecef_to_local
+    """
+    first = 0
+    mid = int((data["size"] - 1) / 2)
+    last = data["size"] - 1
+
+    # eci_to_ecef = eci_to_ecef_transform(data['EXPDate'][mid])
+    eci_to_ecef = R.from_matrix(itrs.rotation_at(timescale.from_datetime(data['EXPDate'][mid])))
+
+    posecef_first = eci_to_ecef.apply(data["afsTangentPointECI"][first, :]).astype('float32')
+    posecef_mid = eci_to_ecef.apply(data["afsTangentPointECI"][mid, :]).astype('float32')
+    posecef_last = eci_to_ecef.apply(data["afsTangentPointECI"][last, :]).astype('float32')
+
+    observation_normal = np.cross(posecef_first, posecef_last)
+    observation_normal = observation_normal / np.linalg.norm(observation_normal)  # normalize vector
+
+    posecef_mid_unit = posecef_mid / np.linalg.norm(posecef_mid)  # unit vector for central position
+    ecef_to_local = R.align_vectors([[1, 0, 0], [0, 1, 0]], [posecef_mid_unit, observation_normal])[0]
+
+    return ecef_to_local
+
+
+def initialize_geometry(data, columns, rows, conf, grid_proto=None, processes=1):
+    logging.info("Initializing 3-D grid...")
+    grid_def = {"columns": columns, "rows": rows, "stepsize": conf.STEP_SIZE, "top_alt": conf.TOP_ALT}
+    grid_def["timescale"] = sfapi.load.timescale()
+    grid_def["ecef_to_local"] = generate_local_transform(data, grid_def["timescale"])
+
+    # A "Jacobian base" dictionary to store atmosphere-independent jacobian elements
+    geo = {"data": data}
+    geo["edges"] = generate_grid(data, grid_def, grid_proto=grid_proto)
+    geo.update(grid_def)
+
+    # jb["rad_grid"], jb["acrosstrack_grid"], jb["alongtrack_grid"] = jb["edges"]
+    cnames = ["rad_grid", "acrosstrack_grid", "alongtrack_grid"]
+    for i, name in enumerate(cnames):
+        geo[name] = geo["edges"][i]
+        geo[f"{name}_c"] = center_grid(geo["edges"][i])
+    geo["alt"], geo["lat"], geo["lon"] = get_alt_lat_lon(geo["rad_grid_c"], geo["acrosstrack_grid_c"],
+                                                         geo["alongtrack_grid_c"], geo["ecef_to_local"])
+
+    geo["is_regular_grid"] = True
+    for axis_edges in geo["edges"]:
+        widths = np.diff(axis_edges)
+        if not all(np.abs(widths - np.mean(widths)) < 0.001 * np.abs(np.mean(widths))):
+            geo["is_regular_grid"] = False
+            break
+
+    k_alt_range = conf.RET_ALT_RANGE
+    if k_alt_range is None:
+        geo["excludeK"] = None
+        geo["k_alt_range"] = (0, 150)
+    else:
+        geo["excludeK"] = np.logical_or(geo["alt"] < k_alt_range[0] * 1e3, geo["alt"] > k_alt_range[1] * 1e3)
+        geo["k_alt_range"] = k_alt_range
+
+    geo["image_vars"] = ['CCDSEL', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'NROW',
+                         'EXPDate', 'qprime', 'afsGnssStateJ2000', 'afsAttitudeState',
+                         "IR1c", "IR2c", "TPlon", "TPlat", "TEXPMS"]
+    return geo
