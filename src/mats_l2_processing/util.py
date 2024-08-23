@@ -5,13 +5,16 @@ from itertools import chain, repeat
 
 
 def get_filter(channel):
-    filters = {"IR1": 1, "IR2": 4, "IR3": 3, "IR4": 2, "UV1": 5, "UV2": 6}
+    filters = {"IR1": 1, "IR2": 4, "IR3": 3, "IR4": 2, "UV1": 5, "UV2": 6, "all": -1}
     try:
         filt = filters[channel]
     except Exception:
         raise ValueError(f"Invalid channel: {channel}!")
 
-    return {'CCDSEL': [filt, filt]}
+    if filt < 0:
+        return {}
+    else:
+        return {'CCDSEL': [filt, filt]}
 
 
 def DT2seconds(dts):
