@@ -21,8 +21,14 @@ def DT2seconds(dts):
     return (dts - DT.datetime(2000, 1, 1, 0, 0, tzinfo=DT.timezone.utc)) / DT.timedelta(0, 1)
 
 
-def get_image(data, idx, var):
+def seconds2DT(s):
+    return DT.timedelta(0, s) + DT.datetime(2000, 1, 1, 0, 0, tzinfo=DT.timezone.utc)
+
+
+def get_image(data, idx, var, size=None):
     res = {"num_image": idx}
+    if size is not None:
+        res["num_images"] = size
     for v in var:
         if hasattr(data[v], 'shape') and len(data[v].shape) > 1:
             res[v] = data[v][idx, ...]
@@ -33,7 +39,8 @@ def get_image(data, idx, var):
 
 def multiprocess(func, dataset, image_args, nproc, common_args, unzip=False):
     assert nproc >= 1, "Invalid number of processes specified!"
-    images = [get_image(dataset, i, image_args) for i in range(dataset["size"])]
+    size = dataset["size"]
+    images = [get_image(dataset, i, image_args, size=size) for i in range(size)]
     if nproc == 1:  # Serial processing (implemented separately to simplify debugging)
         res = []
         for image in images:

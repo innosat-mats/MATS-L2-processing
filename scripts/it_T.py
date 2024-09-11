@@ -37,8 +37,9 @@ def get_args():
     parser.add_argument("--ver_fact", type=float, help="Offset for ver apriori.")
     parser.add_argument("--o2_fact", type=float, help="Factor to multiply o2 apriori by.")
     parser.add_argument("--t_offset", type=float, help="Offset for temperature apriori, K.")
-    parser.add_argument("--col_range", type=int, nargs=2, help="Range of image columns to use. All are used otherwise.")
-    parser.add_argument("--row_range", type=int, nargs=2, help="Range of image rows to use. All are used otherwise.")
+    parser.add_argument("--col_range", dest="COL_RANGE", type=int, nargs=2,
+                        help="Range of image columns to use")
+    parser.add_argument("--row_range", type=int, nargs=2, help="Range of image rows to use")
     parser.add_argument("--prefix", type=str, required=True, help="File name prefixes for numpy output.")
     parser.add_argument("--processes", type=int, default=6, help="Number of threads for jacobian calculation.")
     # parser.add_argument("--nlc_width", type=float, help="NLC dimension along track.")
@@ -52,6 +53,8 @@ def get_args():
                         help="Save first itration jacobian as .npy archive. This may need 2 GB of disk space or more!")
     parser.add_argument("--load_jacobian", action="store_true",
                         help="Load first iteration jacobian from a file. Overrides --save_jacobian.")
+    parser.add_argument("--debug_nan", action="store_true",
+                        help="Add additional checks to catch nan's. Slow and requires extra memory!")
     return parser.parse_args()
 
 
@@ -72,17 +75,16 @@ def main():
     ver_apr = io.read_ncdf(args.ver_apr, ["altitude", "latitude", "VER"])
 
     logging.info("Initializing geometry...")
-    col_range = args.col_range if args.col_range else (0, data["NCOL"][0])
     row_range = args.row_range if args.row_range else (0, data["NROW"][0])
-    columns, rows = [np.arange(r[0], r[1], 1) for r in [col_range, row_range]]
+    columns, rows = [np.arange(r[0], r[1], 1) for r in [conf.COL_RANGE, row_range]]
     local_earth_radius = grids.geoid_radius(np.deg2rad(np.mean(data['TPlat'])))
     grid_proto = [grids.make_grid_proto(conf.ALT_GRID, scaling=1e3, offset=local_earth_radius),
                   grids.make_grid_proto(conf.ACROSS_GRID, scaling=1e3 / local_earth_radius),
                   grids.make_grid_proto(conf.ALONG_GRID, scaling=1e3 / local_earth_radius)]
     jb = grids.initialize_geometry(data, columns, rows, conf, grid_proto=grid_proto, processes=args.processes)
+
     if args.verify_grid:
         fwdm.test_grid(jb, args.processes)
-
     # Interpolate background atmosphere on retrieval grid
     logging.info("Initializing atmospheric data...")
     o2, atm_apr = atm.get_background(jb, mean_time, clim_data, ver_apr)
@@ -104,8 +106,8 @@ def main():
     Se_inv = sp.diags(np.ones([y.flatten().shape[0]]), 0).astype('float32') / (conf.RAD_SCALE ** 2 * len(y))
 
     logging.info("Starting LM iteration...")
-    invm.lm_solve(atm_apr, y, tan_alts, Se_inv, Sa_inv, terms, conf, jb, rt_data, o2, args.processes, args.prefix,
-                  save_K=args.save_jacobian, load_K=args.load_jacobian)
+    invm.lm_solve(atm_apr, y, tan_alts, Se_inv, Sa_inv.tocsr(), terms, conf, jb, rt_data, o2, args.processes,
+                  args.prefix, save_K=args.save_jacobian, load_K=args.load_jacobian, verify=args.debug_nan)
 
 
 if __name__ == "__main__":

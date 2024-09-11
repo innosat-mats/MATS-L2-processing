@@ -1011,4 +1011,64 @@ def iter_T_jacobian(image, common_args):
     print(f"Image {image['num_image']} processed in {toc-tic:.1f} s.")
     return image_K, image_calc_profiles
 
+
+def calc_K_og(jb, rt_data, o2, atm, xsc, valid_obs, processes, fx_only=False):
+    res = multiprocess(calc_K_image, jb["data"], jb["image_vars"], processes,
+                       [jb["edges"], jb["is_regular_grid"], jb["columns"], jb["rows"], jb["ecef_to_local"],
+                        jb["rad_grid"], jb["alongtrack_grid"], jb["acrosstrack_grid"], jb["stepsize"], jb["top_alt"],
+                        jb["excludeK"], jb['timescale'], o2, atm, rt_data, valid_obs, fx_only], unzip=False)
+
+    K, fx = [], []
+    for i in range(2):
+        fx.append(np.array(list(chain.from_iterable([profiles[i] for _, profiles in res]))))
+        if not fx_only:
+            K.append(sp.vstack([k_part[i] for k_part, _ in res]))
+    return None if fx_only else sp.vstack(K).multiply(xsc[np.newaxis, :]).tocsr(), np.stack(fx, axis=0)
+
+
+def calc_K_image_og(image, common_args):
+    edges, is_regular_grid, columns, rows, ecef_to_local, rad_grid, alongtrack_grid, acrosstrack_grid, stepsize, \
+        top_alt, excludeK, timescale, o2, atm, rt_data, valid_obs, fx_only = common_args
+
+    image_calc_profiles = [[], []]
+    image_K = []
+    valid_obs_im = valid_obs[image["num_image"], :, :]
+
+    image["los"] = calc_los_image(image, (columns, rows, ecef_to_local, timescale, top_alt, stepsize))
+
+    if fx_only:
+        pname = "Forward model"
+    else:
+        pname = "Jacobian"
+        for i in range(2):
+            image_K.append(sp.lil_array((len(rows) * len(columns),
+                           2 * (len(rad_grid) - 1) * (len(alongtrack_grid) - 1) * (len(acrosstrack_grid) - 1))))
+
+    image_k_row = 0
+    tic = time.time()
+    for i, column in enumerate(columns):
+        for j, row in enumerate(rows):
+            if valid_obs_im[i, j]:
+                if fx_only:
+                    ircalc = calc_rad_ng(image["los"][i][j], stepsize, o2, atm, rt_data, edges)
+                else:
+                    ircalc, VERgrad, TEMPgrad = calc_rad2(image["los"][i][j], stepsize, o2, atm, rt_data, edges)
+                    if excludeK is not None:
+                        VERgrad[:, excludeK] = 0.0
+                        TEMPgrad[:, excludeK] = 0.0
+                    for ch in range(2):
+                        k_row_c = np.hstack([VERgrad[ch, ...].reshape(-1), TEMPgrad[ch, ...].reshape(-1)])
+                        image_K[ch][image_k_row, :] = k_row_c.reshape(-1)
+            else:
+                ircalc = [0.0, 0.0]
+            image_k_row += 1
+            for ch in range(2):
+                image_calc_profiles[ch].append(ircalc[ch])
+        if i == 0:
+            toc = time.time()
+            logging.log(15, f"{pname}: Started image {image['num_image']}, ETA {(toc - tic) * len(columns):.3f} s.")
+    toc = time.time()
+    logging.log(15, f"{pname}: Image {image['num_image']} processed in {toc-tic:.1f} s.")
+    return image_K, image_calc_profiles
+
 # %%

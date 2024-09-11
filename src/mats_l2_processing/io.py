@@ -226,7 +226,7 @@ def L2_write_iter(prefix, atm, fx, numit):
     append_L2_ncdf(name, atm_vars=atm_vars, obs_vars=obs_vars)
 
 
-def write_ncdf_L1b(pdata, outfile, channel, version):
+def write_ncdf_L1b(pdata, outfile, channel, version, im_calibrated=True):
     with nc.Dataset(outfile, 'w') as nf:
         num_images = len(pdata)
         # Global parameters
@@ -245,12 +245,13 @@ def write_ncdf_L1b(pdata, outfile, channel, version):
             ncdf_create_var(np.arange(param[0]), nf, dim, (dim, ), np.int16, long_name=param[1])
 
         # Create variable for ImageCalibrated
-        ncdf_create_var(np.stack(pdata["ImageCalibrated"].to_numpy(), axis=0),
-                        nf, "ImageCalibrated", ("num_images", "im_row", "im_col"), np.float32)
+        if im_calibrated:
+            ncdf_create_var(np.stack(pdata["ImageCalibrated"].to_numpy(), axis=0),
+                            nf, "ImageCalibrated", ("num_images", "im_row", "im_col"), np.float32)
 
         # Create variable for CalibrationErrors
         error = np.stack([np.stack(pdata["CalibrationErrors"][i], axis=0)
-                          for i in range(pdata["CalibrationErrors"].shape[0])], axis=0)
+                          for i in range(len(pdata["CalibrationErrors"]))], axis=0)
         ncdf_create_var(error, nf, "CalibrationErrors", ("num_images", "im_row", "im_col"), np.int16)
 
         # Create variable for BadColumns
@@ -261,8 +262,11 @@ def write_ncdf_L1b(pdata, outfile, channel, version):
         ncdf_create_var(bad_cols, nf, "BadColumns", ("num_images", "im_col"), np.int8)
 
         # Handle the remaining variables automatically
+        handled_vars = list(nf.variables.keys())
+        if not im_calibrated:
+            handled_vars.append("ImageCalibrated")
         for var in pdata.keys():
-            if var not in nf.variables.keys():
+            if var not in handled_vars:
                 data = pdata[var].to_numpy()
                 ncdf_create_var(data, nf, var, ("num_images", ), type(data.flat[0]))
 
@@ -342,6 +346,20 @@ def read_multi_ncdf(files, var, offsets=None, numimg=None):
                 else:
                     data[chn][v] = nf[v][offsets[chn]:(offsets[chn] + numimg)]
     return data, version
+
+
+def read_chn_from_pandas(df, chn_name, offset, numimg, var):
+    dfc = df[df["channel"] == chn_name].copy()
+    dfc.reset_index(drop=True, inplace=True)
+    res = {}
+    for v in var:
+        array = dfc[v].to_numpy()
+        if type(array[0]) is np.ndarray:
+            res[v] = np.stack(array[offset:(offset + numimg)], axis=0)
+        else:
+            res[v] = array[offset:(offset + numimg)]
+
+    return res
 
 
 def add_ncdf_vars(file, proto_var, new_vars):

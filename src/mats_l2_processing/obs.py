@@ -1,5 +1,6 @@
 import numpy as np
 import netCDF4 as nc
+import logging
 from scipy.spatial.transform import Rotation as R
 from scipy.interpolate import RectBivariateSpline
 
@@ -15,34 +16,38 @@ def get_deg_map(image):
     return dmap
 
 
-def time_offsets(files):
+def time_offsets(times):
     # Check temporal alignement, remove images from the beginning if necessary to align
-    numfiles = len(files)
+    numtimes = len(times)
     stimes = []
-    for chn, file in enumerate(files):
-        with nc.Dataset(file, 'r') as nf:
-            stimes.append(nf["EXPDate"][:])
-            if chn == 0:
-                dt = np.median(np.diff(nf["EXPDate"][:]))
-                numimg = len(stimes[-1])
-            else:
-                numimg = np.minimum(numimg, len(stimes[-1]))
+    for chn, time in enumerate(times):
+        stimes.append(time)
+        if chn == 0:
+            dt = np.median(np.diff(time))
+            numimg = len(stimes[-1])
+        else:
+            numimg = np.minimum(numimg, len(stimes[-1]))
 
-    offsets = np.zeros(len(files), dtype=int)
-    for i in range(1, numfiles):
+    offsets = np.zeros(numtimes, dtype=int)
+    for i in range(1, numtimes):
         deltas = stimes[0][:numimg] - stimes[i][:numimg]
         offsets[i] = np.rint(np.median(deltas) / dt)
 
     min_offset = np.min(offsets)
     if min_offset < 0:
         offsets -= min_offset
-    numimg = np.min([len(stimes[i]) - offsets[i] for i in range(numfiles)])
+    numimg = np.min([len(stimes[i]) - offsets[i] for i in range(numtimes)])
 
-    for i in range(numfiles):
+    for i in range(numtimes):
         rtimes = stimes[i][offsets[i]:(offsets[i] + numimg)]
         if i == 0:
             rtimes0 = rtimes
-        assert np.max(np.abs(rtimes - rtimes0)) < dt / 2, "Could not align channels, maybe there are gaps in data?"
+        if np.max(np.abs(rtimes - rtimes0)) > dt / 2:
+            logging.warning(f"Misaligned channel #{i}")
+            for st in [f"{x[0].minute}:{x[0].second}.{x[0].microsecond:2d} - " +
+                       f'{x[1].minute}:{x[1].second}.{x[1].microsecond:2d} ' for x in zip(rtimes, rtimes0)]:
+                logging.warning(st)
+            raise ValueError("Could not align channels, maybe there are gaps in data?")
     return offsets, numimg
 
 
@@ -77,7 +82,12 @@ def reinterpolate(data, deg_maps, cm):
     return res
 
 
-def remove_background(ir1, ir2, ir3, ir4):
+def remove_background(ir1, ir2, ir3, ir4, recal=None):
+    ir1c, ir2c = ir1.copy(), ir2.copy()
+    if recal is not None:
+        ir1c, ir2c, ir3, ir4 = [recal[i] * arr for i, arr in enumerate([ir1c, ir2c, ir3, ir4])]
     ir3_off, ir4_off = [np.mean(arr[:, -11:-7, :], axis=1)[:, np.newaxis, :] / 1.05 for arr in [ir3, ir4]]
     bgr = (ir3 - ir3_off + ir4 - ir4_off) / 2
-    return (ir1 - bgr) * 3.57, (ir2 - bgr) * 8.16
+    ir1c -= bgr
+    ir2c -= bgr
+    return ir1c * 3.57, ir2c * 8.16

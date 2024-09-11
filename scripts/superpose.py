@@ -3,27 +3,26 @@ import numpy as np
 
 from mats_l2_processing.obs import time_offsets, cross_maps, reinterpolate, remove_background
 from mats_l2_processing.io import read_multi_ncdf, add_ncdf_vars
+from mats_l2_processing.parameters import make_conf
 
 
 CHNAMES = ["IR1", "IR2", "IR3", "IR4"]
-CCD_VARS = ['CCDSEL', 'NCSKIP', 'NRBIN', 'NCOL', 'NRSKIP', 'NROW', 'NCBINCCDColumns',
-            "EXPDate", "qprime", "afsAttitudeState", "TEXPMS"]
-ALL_VARS = CCD_VARS + ["ImageCalibrated"]
 
 # Usage: python superpose.py [IR1-IR4 file names, IR1 to be appended]
 
 
 def main():
-    files = sys.argv[1:5]
-    assert len(files) == len(CHNAMES)
+    files = sys.argv[1:len(CHNAMES) + 1]
+    conf_file = sys.argv[len(CHNAMES) + 1]
+    conf, const = make_conf("superpose", conf_file, {})
 
     # Align images on different channels
     offsets, numimg = time_offsets(files)
 
     # Read in data
-    data, version = read_multi_ncdf(files, ALL_VARS, offsets=offsets, numimg=numimg)
+    data, version = read_multi_ncdf(files, const.ALL_VARS, offsets=offsets, numimg=numimg)
     # Calculate the positions of IR1 pixels w.r.t. the image centres of other channels
-    deg_maps, cmaps = cross_maps(data, CCD_VARS)
+    deg_maps, cmaps = cross_maps(data, const.CCD_VARS)
     # Interpolate all IR channels on IR1 grid
     reint = reinterpolate(data, deg_maps, cmaps)
     ir2, ir3, ir4 = [reint[i, :, :, :] for i in range(3)]
@@ -35,7 +34,7 @@ def main():
         ir1, ir2, ir3, ir4 = [x * 0.1 for x in [ir1, ir2, ir3, ir4]]
 
     # IR1 and IR2 on the same (IR1) grid with backgrounds removed
-    ir1c, ir2c = remove_background(ir1, ir2, ir3, ir4)
+    ir1c, ir2c = remove_background(ir1, ir2, ir3, ir4, recal=conf.RECAL_FAC_IR)
     # Append the results to IR1 file as new variables
     add_ncdf_vars(files[0], "ImageCalibrated",
                   [("IR2", "IR2 calibrated image reinterpolated on IR1 grid", ir2),

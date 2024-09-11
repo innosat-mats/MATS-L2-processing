@@ -3,14 +3,22 @@ from types import SimpleNamespace
 
 def make_conf(conf_type, conf_file, args):
     const, req = {}, {}
-    const["iter_T"] = {"NEEDED_DATA": ["NCOL", "NROW", "TPlat", "TPlon", "EXPDate", "qprime", 'afsAttitudeState',
-                                       'afsGnssStateJ2000', 'CCDSEL', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN',
-                                       "IR1c", "IR2c", 'afsTangentPointECI', 'TEXPMS']}
+
+    CCD_VARS = ['CCDSEL', 'NCSKIP', 'NRBIN', 'NCOL', 'NRSKIP', 'NROW', 'NCBINCCDColumns', "TEXPMS"]
+    ATT_VARS = ["qprime", "afsAttitudeState", 'afsGnssStateJ2000', "EXPDate"]
+    TP_VARS = ["TPlat", "TPlon", 'afsTangentPointECI']
+
+    const["iter_T"] = {"NEEDED_DATA": CCD_VARS + ATT_VARS + TP_VARS + ["IR1c", "IR2c",]}
     req["iter_T"] = ['START_TIME', 'STOP_TIME', 'ALT_GRID', 'ALONG_GRID', 'ACROSS_GRID', 'CHANNEL', "LM_IT_MAX",
                      "LM_PAR_0", "LM_FAC", "LM_MAX_FACTS_PER_ITER", "SA_WEIGHTS_T", "SA_WEIGHTS_VER", "EPSILON_IR1",
                      "EPSILON_IR2", "TP_ALT_RANGE", "VER_SCALE", "T_SCALE", "VER_BOUNDS", "T_BOUNDS", "RAD_SCALE",
                      "CONV_CRITERION", "RET_ALT_RANGE", "ASPECT_RATIO", "CG_ATOL", "CG_RTOL", "CG_MAX_STEPS",
-                     "TOP_ALT", "STEP_SIZE"]
+                     "TOP_ALT", "STEP_SIZE", "COL_RANGE"]
+
+    const["superpose"] = {"CCD_VARS": CCD_VARS + ATT_VARS,
+                          "ALL_VARS": CCD_VARS + ATT_VARS + ["ImageCalibrated"],
+                          "NCDF_VARS": CCD_VARS + ATT_VARS + TP_VARS + ["CalibrationErrors", "BadColumns"]}
+    req["superpose"] = ["RECAL_FAC_IR", "START_TIME", "STOP_TIME", "VERSION"]
 
     req["get_data"] = ['START_TIME', 'STOP_TIME', 'VERSION', 'CHANNEL', 'STR_LEN']
 
@@ -37,14 +45,20 @@ def make_conf(conf_type, conf_file, args):
                 "VERSION": 0.6,
                 "STR_LEN": 20,
                 "TOP_ALT": 120e3,
-                "STEP_SIZE": 8e3}
+                "STEP_SIZE": 8e3,
+                "RECAL_FAC_IR": [1.0, 1.0, 1.0, 1.0],
+                "COL_RANGE": [0, 44]}
 
     if conf_file is not None:
         exec(open(conf_file).read())
-    if conf_type not in req.keys():
+    if (conf_type not in req.keys()) and (conf_type not in const.keys()):
         raise ValueError(f"Unknown configuration type {conf_type}!")
     constants = const[conf_type] if conf_type in const.keys() else {}
-    conf = set_vars(req[conf_type], (vars(args), dict(globals(), **locals()), defaults))
+    # if len(args.keys()) > 0:
+    pars = (vars(args), dict(globals(), **locals()), defaults)
+    # else:
+    #    pars = (dict(globals(), **locals()), defaults)
+    conf = set_vars(req[conf_type], pars) if conf_type in req.keys() else {}
     return [SimpleNamespace(**dic) for dic in [conf, constants]]
 
 

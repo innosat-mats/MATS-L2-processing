@@ -4,6 +4,7 @@ from scipy import sparse
 import logging
 import time
 from sparse_dot_mkl import dot_product_mkl as mdot
+from functools import partial
 
 
 def oem_basic_sparse_2(y, K, xa, Seinv, Sainv, maxiter, method='spsolve', ys=None, xsc=None):
@@ -103,7 +104,7 @@ def lm_iter(xa, xsc, xp, y, fx, K, Seinv, Sainv, lmp):
     return xp - dx
 
 
-def mkl_lm_prep(K, xsc, Sainv, Seinv):
+def mkl_lm_prep_og(K, xsc, Sainv, Seinv):
     tic = time.time()
 
     Ks = K.multiply(xsc[np.newaxis, :])
@@ -114,7 +115,37 @@ def mkl_lm_prep(K, xsc, Sainv, Seinv):
     return (S, KsTr)
 
 
-def mkl_iter_wprep(xa, xp, y, fx, Sainv, Seinv, lmp, prep, conf):
+def mkl_lm_prep(K, xsc, Sainv, Seinv):
+    tic = time.time()
+
+    # K = K.multiply(xsc[np.newaxis, :])
+    S = mdot(K.T.tocsr(), Seinv @ K.tocsr()) + Sainv
+
+    logging.info(f"LM prep: Jacobian preprocessing for LM copleted in {time.time() - tic:.3f} s.")
+    return S
+
+
+def mkl_iter_wprep(xa, xp, y, fx, Sainv, Seinv, lmp, prep, K, conf):
+    tic = time.time()
+
+    KSey = Sainv @ (xp - xa) + K.T.tocsr() @ (Seinv @ (fx - y))
+    dx, resid_norm, iters = mkl_cg(sparse.csr_matrix(prep + lmp * sparse.eye(Sainv.shape[0])), KSey, np.zeros_like(xp),
+                                   atol=conf.CG_ATOL, rtol=conf.CG_RTOL, maxiter=conf.CG_MAX_STEPS)
+    logging.log(15, f"Solver: calculated new atmosphere state in {time.time() - tic:.3f} s.")
+    return xp - dx
+
+
+def mkl_iter_implicit(xa, xp, y, fx, Sainv, Seinv, lmp, K, conf):
+    tic = time.time()
+    KSey = mdot(Sainv, xp - xa) + mdot(K.T, Seinv @ (fx - y))
+    logging.log(15, "Solver: b calculated.")
+    dx, resid_norm, iters = mkl_cg_implicit(K, KSey, Seinv, Sainv, lmp, x_init=np.zeros_like(xp),
+                                            atol=conf.CG_ATOL, rtol=conf.CG_RTOL, maxiter=conf.CG_MAX_STEPS)
+    logging.log(15, f"Solver: calculated new atmosphere state in {time.time() - tic:.3f} s.")
+    return xp - dx
+
+
+def mkl_iter_wprep_og(xa, xp, y, fx, Sainv, Seinv, lmp, prep, conf):
     tic = time.time()
 
     S, KsTr = prep
@@ -125,7 +156,7 @@ def mkl_iter_wprep(xa, xp, y, fx, Sainv, Seinv, lmp, prep, conf):
     return xp - dx
 
 
-def mkl_cg(A, b, x_init=None, atol=0, rtol=1e-5, maxiter=5000):
+def mkl_cg_explicit(A, b, x_init=None, atol=0, rtol=1e-5, maxiter=5000):
 
     threshold = np.maximum(rtol * norm(b, ord=2), atol)
 
@@ -168,6 +199,78 @@ def mkl_cg(A, b, x_init=None, atol=0, rtol=1e-5, maxiter=5000):
     logging.warn(f"CG: Did not achieve convergence in {maxiter} steps!")
     logging.warn(f"CG: Accepting result despite residual being {sqnormr / threshold} times too large!")
     return x, sqnormr, k + 1
+
+
+def mkl_cg(A, b, **kwargs):
+    return mkl_cg_core(partial(mdot, matrix_a=A), A.shape[1], b, **kwargs)
+
+
+def mkl_cg_implicit(K, b, Seinv, Sainv, lm, **kwargs):
+    if type(Seinv) is sparse.eye:
+        Adot = partial(mkl_Adot_diag_seinv, K=K, Seinv_dval=Seinv[0, 0], Sainv=Sainv, lm=lm)
+    elif type(Seinv) is sparse._dia.dia_matrix:
+        Adot = partial(mkl_Adot, K=K, Seinv=Seinv, Sainv=Sainv, lm=lm)
+    else:
+        raise ValueError(f"Unsupported Seinv type {type(Seinv)}!")
+    logging.log(15, "Solver: starting CG...")
+    return mkl_cg_core(Adot, K.shape[1], b, **kwargs)
+
+
+def mkl_cg_core(Adot, A_numrows, b, x_init=None, atol=0, rtol=1e-5, maxiter=5000):
+    # mdot(K.T.tocsr(), Seinv @ K.tocsr()) + Sainv
+
+    threshold = np.maximum(rtol * norm(b, ord=2), atol)
+
+    if x_init is None:
+        x = np.zeros(A_numrows)
+        residual = b
+    else:
+        x = x_init
+        residual = b - Adot(x)
+
+    normr = np.dot(residual, residual)
+    sqnormr = np.sqrt(normr)
+    if sqnormr < threshold:
+        logging.warn("CG: Accepted initial guess!")
+        return x, sqnormr, 0
+
+    p = residual
+
+    for k in range(maxiter):
+        # old_residual = residual
+        old_normr = normr
+
+        Ap = Adot(p)
+        alpha = normr / np.dot(p, Ap)
+        x += alpha * p
+        residual -= alpha * Ap
+        normr = np.dot(residual, residual)
+
+        sqnormr = np.sqrt(normr)
+        logging.log(15, f"CG: step {k} - {sqnormr / threshold}")
+        if sqnormr < threshold:
+            logging.info(f"CG: converged in {k + 1} steps.")
+            # rr = b - mdot(A, x)
+            # logging.log(15, f"{sqnormr}, {norm(rr, ord=2)}, {norm(b, ord=2)}")
+            return x, sqnormr, k + 1
+
+        beta = normr / old_normr
+        p = residual + beta * p
+
+    logging.warn(f"CG: Did not achieve convergence in {maxiter} steps!")
+    logging.warn(f"CG: Accepting result despite residual being {sqnormr / threshold} times too large!")
+    return x, sqnormr, k + 1
+
+
+def mkl_Adot_diag_seinv(vec, K, Seinv_dval, Sainv, lm):
+    # This implements matrix vector product S @ vec, with S = K.T @ Seinv @ K + Sainv + lm * I
+    # in case of diagonal Seinv
+    return Seinv_dval * mdot(K.T, mdot(K, vec)) + mdot(Sainv, vec) + lm * vec
+
+
+def mkl_Adot(vec, K, Seinv, Sainv, lm):
+    # This implements matrix vector product S @ vec, with S = K.T @ Seinv @ K + Sainv + lm * I
+    return mdot(K.T, Seinv @ mdot(K, vec)) + mdot(Sainv, vec) + lm * vec
 
 
 def cost_func(x, xa, y, fx, Seinv, Sainv):

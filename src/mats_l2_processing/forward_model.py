@@ -11,6 +11,7 @@ from sorcery import dict_of
 import time
 from itertools import product, chain
 import logging
+import tracemalloc
 # %%
 
 
@@ -199,39 +200,60 @@ def calc_obs_image(image, common_args):
     return image_profiles[0], image_profiles[1], image_tanalts
 
 
-def calc_K(jb, rt_data, o2, atm, valid_obs, processes, fx_only=False):
+def calc_K(jb, rt_data, o2, atm, xsc, valid_obs, processes, fx_only=False, verify_results=False):
+    multi_start = time.time()
+    pname = "Forward model" if fx_only else "Jacobian"
     res = multiprocess(calc_K_image, jb["data"], jb["image_vars"], processes,
                        [jb["edges"], jb["is_regular_grid"], jb["columns"], jb["rows"], jb["ecef_to_local"],
                         jb["rad_grid"], jb["alongtrack_grid"], jb["acrosstrack_grid"], jb["stepsize"], jb["top_alt"],
-                        jb["excludeK"], jb['timescale'], o2, atm, rt_data, valid_obs, fx_only], unzip=False)
+                        jb["excludeK"], jb['timescale'], xsc, o2, atm, rt_data, valid_obs, fx_only], unzip=False)
 
-    K, fx = [], []
-    for i in range(2):
-        fx.append(np.array(list(chain.from_iterable([profiles[i] for _, profiles in res]))))
+    stack_start = time.time()
+    K, im_fx = res.pop(0)
+    fxl = [[im_fx[0]], [im_fx[1]]]
+    while len(res) > 0:
+        im_K, im_fx = res.pop(0)
         if not fx_only:
-            K.append(sp.vstack([k_part[i] for k_part, _ in res]))
-    return None if fx_only else sp.vstack(K), np.stack(fx, axis=0)
+            K = K + im_K
+        for i in range(len(fxl)):
+            fxl[i].append(im_fx[i])
+    del im_K
+    sort_start = time.time()
+    logging.log(15, f"Jacobian: Stacking took {sort_start - stack_start:.1f} s")
+    if not fx_only:
+        K.sort_indices()
+    logging.log(15, f"Jacobian: Sorting took {time.time() - sort_start:.1f} s")
+
+    fx = np.stack([np.array(list(chain.from_iterable(lis))) for lis in fxl], axis=0)
+    calc_end = time.time()
+    logging.log(15, f"Jacobian: Jacobian calculated in  {calc_end - multi_start:.1f} s")
+
+    if verify_results:
+        assert not np.isnan(fx).any(), f"{pname}: Nan's in fx!"
+        if not fx_only:
+            assert not np.isnan(K.max()), f"{pname}: Nan's in K!"
+        logging.log(15, f"Jacobian: Jacobian checked for Nan's  {time.time() - calc_end:.1f} s")
+
+    return None if fx_only else K, fx
 
 
 def calc_K_image(image, common_args):
     edges, is_regular_grid, columns, rows, ecef_to_local, rad_grid, alongtrack_grid, acrosstrack_grid, stepsize, \
-        top_alt, excludeK, timescale, o2, atm, rt_data, valid_obs, fx_only = common_args
+        top_alt, excludeK, timescale, xsc, o2, atm, rt_data, valid_obs, fx_only = common_args
 
     image_calc_profiles = [[], []]
-    image_K = []
     valid_obs_im = valid_obs[image["num_image"], :, :]
-
+    numpixels = len(rows) * len(columns) * image["num_images"]
+    gridsize = (len(rad_grid) - 1) * (len(alongtrack_grid) - 1) * (len(acrosstrack_grid) - 1)
     image["los"] = calc_los_image(image, (columns, rows, ecef_to_local, timescale, top_alt, stepsize))
 
     if fx_only:
         pname = "Forward model"
     else:
         pname = "Jacobian"
-        for i in range(2):
-            image_K.append(sp.lil_array((len(rows) * len(columns),
-                           2 * (len(rad_grid) - 1) * (len(alongtrack_grid) - 1) * (len(acrosstrack_grid) - 1))))
+        image_K = sp.lil_array((2 * numpixels, 2 * gridsize))
 
-    image_k_row = 0
+    image_k_row = len(rows) * len(columns) * image["num_image"]
     tic = time.time()
     for i, column in enumerate(columns):
         for j, row in enumerate(rows):
@@ -245,7 +267,7 @@ def calc_K_image(image, common_args):
                         TEMPgrad[:, excludeK] = 0.0
                     for ch in range(2):
                         k_row_c = np.hstack([VERgrad[ch, ...].reshape(-1), TEMPgrad[ch, ...].reshape(-1)])
-                        image_K[ch][image_k_row, :] = k_row_c.reshape(-1)
+                        image_K[image_k_row + ch * numpixels, :] = k_row_c.reshape(-1)
             else:
                 ircalc = [0.0, 0.0]
             image_k_row += 1
@@ -254,6 +276,10 @@ def calc_K_image(image, common_args):
         if i == 0:
             toc = time.time()
             logging.log(15, f"{pname}: Started image {image['num_image']}, ETA {(toc - tic) * len(columns):.3f} s.")
+
+    if not fx_only:
+        image_K = image_K.tocsr()
+        image_K = image_K.multiply(xsc[np.newaxis, :])
     toc = time.time()
     logging.log(15, f"{pname}: Image {image['num_image']} processed in {toc-tic:.1f} s.")
-    return image_K, image_calc_profiles
+    return None if fx_only else image_K, image_calc_profiles

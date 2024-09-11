@@ -58,7 +58,7 @@ def tikhonov_diff_op(shape, axis, axis_grid, volume_factors=None):
         scalings *= volume_factors
 
     # return sp.diags(-scalings, offsets=0, dtype='float32') + sp.diags(scalings[:-step], offsets=step, dtype='float32')
-    return sp.diags([-scalings, scalings], offsets=[0, step], dtype='float32')
+    return sp.diags([-scalings, scalings], offsets=[0, step], dtype='float64')
 
 
 def tikhonov_laplacian_op(grids, volume_factors, aspect_ratio=None):
@@ -73,7 +73,7 @@ def tikhonov_laplacian_op(grids, volume_factors, aspect_ratio=None):
     """
     shape = np.array([len(grid) for grid in grids])
     size = np.prod(shape)
-    L = sp.dia_array((size, size), dtype='float32')
+    L = sp.dia_array((size, size), dtype='float64')
     if aspect_ratio is None:
         aspect_ratio = np.ones(len(grids))
 
@@ -93,7 +93,7 @@ def tikhonov_laplacian_op(grids, volume_factors, aspect_ratio=None):
             diag_main, diag_up, diag_down = [arr * volume_factors
                                              for arr in [diag_main, diag_up, diag_down]]
         L += aspect_ratio[axis] * sp.diags([diag_down[step:], diag_main, diag_up[:-step]],
-                                           offsets=[-step, 0, step], dtype='float32')
+                                           offsets=[-step, 0, step], dtype='float64')
     return L
 
 
@@ -135,7 +135,7 @@ def Sa_inv_tikhonov(grid, weight_0, diff_weights=[0.0, 0.0, 0.0], laplacian_weig
     diagonal = diagonal.flatten()
     volumes = np.sqrt(diagonal)
 
-    Sa_inv = sp.diags(diagonal * weight_0 ** 2).astype('float32')
+    Sa_inv = sp.diags(diagonal * weight_0 ** 2).astype('float64')
     terms = {"Zero-order": Sa_inv.copy()} if store_terms else {}
 
     names = ["Altitude gradient", "Across-track gradient", "Along-track gradient"]
@@ -225,6 +225,7 @@ def x2atm(x, shape, scales):
 
 
 def reset_invalid(x, scales, bounds):
+    assert not np.isnan(x).any(), "Nan's found in solution! Abort!"
     size = int(len(x) / len(scales))
     lims = np.zeros((2, len(x)))
     for i in range(len(scales)):
@@ -282,11 +283,11 @@ def limit_alt(jb, y, tan_alts, alt_range):
 
 
 def lm_solve(atm_apr, y, tan_alts, Seinv, Sainv, terms, conf, jb, rt_data, o2, nproc, prefix,
-             save_K=False, load_K=False):
+             save_K=False, load_K=False, verify=False):
     scales = (conf.VER_SCALE, conf.T_SCALE)
     bounds = (conf.VER_BOUNDS, conf.T_BOUNDS)
-
     lm_start_time = time.time()
+    # tracemalloc.start()
 
     # Initializing common variables
     channels, atm_vars = ["IR1", "IR2"], ["VER", "T"]
@@ -302,42 +303,49 @@ def lm_solve(atm_apr, y, tan_alts, Seinv, Sainv, terms, conf, jb, rt_data, o2, n
     lm_par = conf.LM_PAR_0
     K = None
 
-    # Main iteration
+    #  Initial Jacobian
+    if load_K:
+        K = sp.load_npz(f"{prefix}_1_K.npz")
+        fxp = np.load(f"{prefix}_1_fxp.npz")
+        logging.info("Jacobian loaded from file.")
+    else:
+        K, fxp = calc_K(jb, rt_data, o2, x2atm(xp, atm_shape, scales), xsc, valid_alt, nproc)
+        if save_K:
+            sp.save_npz(f"{prefix}_1_K.npz", K)
+            with open(f"{prefix}_1_fxp.npz", 'wb') as f:
+                np.save(f, fxp)
+
+    L2_write_init(jb, prefix, atm_apr, y, fxp, np.reshape(tan_alts, (-1, len(jb["columns"]), len(jb["rows"]))),
+                  jb["k_alt_range"], conf.TP_ALT_RANGE)
+    cf_p = oem.cost_func(xa, xa, y_ar, fxp.flatten(), Seinv, Sainv)
+    logging.info(f"Initial misfit: {cf_p:.2e}")
+
+    #  Main iteration
     for it in range(1, conf.LM_IT_MAX + 1):
-        sols, cfs, fxs = [], [], []
-        if it == 1 and load_K:
-            K = sp.load_npz(f"{prefix}_1_K.npz")
-            fxp = np.load(f"{prefix}_1_fxp.npz")
-            logging.info("Jacobian loaded from file.")
-        else:
-            K, fxp = calc_K(jb, rt_data, o2, x2atm(xp, atm_shape, scales), valid_alt, nproc)
-        if it == 1:
-            if save_K and not load_K:
-                sp.save_npz(f"{prefix}_{it}_K.npz", K)
-                with open(f"{prefix}_{it}_fxp.npz", 'wb') as f:
-                    np.save(f, fxp)
+        # sols, cfs, fxs = [], [], []  # In
+        best_sol, sol = {}, {}
+        if it > 1:
+            del K  # Clear previous Jacobian
+            K, fxp = calc_K(jb, rt_data, o2, x2atm(xp, atm_shape, scales), xsc, valid_alt, nproc, verify_results=verify)
 
-            L2_write_init(jb, prefix, atm_apr, y, fxp, np.reshape(tan_alts, (-1, len(jb["columns"]), len(jb["rows"]))),
-                          jb["k_alt_range"], conf.TP_ALT_RANGE)
-            cf_p = oem.cost_func(xa, xa, y_ar, fxp.flatten(), Seinv, Sainv)
-            logging.info(f"Initial misfit: {cf_p:.2e}")
-
-        lm_prep_data = oem.mkl_lm_prep(K, xsc, Sainv, Seinv)
-        del K
         lms = [lm_par * float(conf.LM_FAC) ** x for x in range(-1, conf.LM_MAX_FACTS_PER_ITER + 1)]
         for j, lm in enumerate(lms):
             # xhat = oem.lm_iter(xa, xsc, xp, y_ar, fxp.flatten(), K, Seinv, Sainv, lm)
-            xhat = oem.mkl_iter_wprep(xa, xp, y_ar, fxp.flatten(), Sainv, Seinv, lm, lm_prep_data, conf)
-            sols.append(reset_invalid(xhat, scales, bounds))
-            fxs.append(calc_K(jb, rt_data, o2, x2atm(sols[-1], atm_shape, scales), valid_alt, nproc, fx_only=True)[1])
-            cfs.append(oem.cost_func(xa, sols[-1], y_ar, fxs[-1].flatten(), Seinv, Sainv))
-            logging.info(f"Iteration {it}: derived solution with lambda={lm:.2e}, misfit {cfs[-1]:.2e}.")
-            contributions(sols[-1], xa, y_ar, fxs[-1].flatten(), Seinv, terms, channels, atm_vars)
+            sol["lm"] = lm
+            xhat = oem.mkl_iter_implicit(xa, xp, y_ar, fxp.flatten(), Sainv, Seinv, lm, K, conf)
+            sol["sol"] = reset_invalid(xhat, scales, bounds)
+            sol["fx"] = calc_K(jb, rt_data, o2, x2atm(sol["sol"], atm_shape, scales), xsc,
+                               valid_alt, nproc, fx_only=True, verify_results=verify)[1]
+            sol["cf"] = oem.cost_func(xa, sol["sol"], y_ar, sol["fx"].flatten(), Seinv, Sainv)
+            logging.info(f"Iteration {it}: derived solution with lambda={lm:.2e}, misfit {sol['cf']:.2e}.")
+            contributions(sol["sol"], xa, y_ar, sol["fx"].flatten(), Seinv, terms, channels, atm_vars)
 
-            if j >= 1:
-                min_cf = min(cfs)
-                cf_ratio = min_cf / cf_p
-                best_idx = cfs.index(min_cf)
+            if j == 0:
+                best_sol = sol.copy()
+            else:
+                if sol["cf"] < best_sol["cf"]:
+                    best_sol = sol.copy()
+                cf_ratio = best_sol["cf"] / cf_p
                 if cf_ratio > 1.0:
                     if j == len(lms) - 1:
                         logging.critical(f"Iteration {it} failed to converge!")
@@ -346,11 +354,12 @@ def lm_solve(atm_apr, y, tan_alts, Seinv, Sainv, terms, conf, jb, rt_data, o2, n
                 else:
                     converged = (cf_ratio > conf.CONV_CRITERION)
                     final = converged or (it == conf.LM_IT_MAX)
-                    if converged and (best_idx == len(sols) - 1):
+                    if converged and (best_sol["lm"] == sol["lm"]):
                         continue
-                    xp, fxp, lm_par, cf_p = sols[best_idx], fxs[best_idx], lms[best_idx], min_cf
+                    sol = {}
+                    xp, fxp, lm_par, cf_p = best_sol["sol"], best_sol["fx"], best_sol["lm"], best_sol["cf"]
                     logging.info(f"Iteration {it}: accepted solution with lambda={lm_par:.2e}" +
-                                 f", misfit {cfs[-1]:.2e} ({cf_ratio:.2f} of previous)")
+                                 f", misfit {best_sol['cf']:.2e} ({cf_ratio:.2f} of previous)")
                     L2_write_iter(prefix, x2atm(xp, atm_shape, scales), fxp, -1 if final else it)
                     if not final:
                         break
