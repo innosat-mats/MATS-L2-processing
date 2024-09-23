@@ -264,7 +264,7 @@ def write_ncdf_L1b(pdata, outfile, channel, version, im_calibrated=True):
         # Handle the remaining variables automatically
         handled_vars = list(nf.variables.keys())
         if not im_calibrated:
-            handled_vars.append("ImageCalibrated")
+            handled_vars = handled_vars + ["ImageCalibrated", "CalibrationErrors", "BadColumns"]
         for var in pdata.keys():
             if var not in handled_vars:
                 data = pdata[var].to_numpy()

@@ -26,6 +26,7 @@ def get_args():
     parser.add_argument("--release", type=str,
                         help="Make a release-type ncdf with the specified release eersion.")
     parser.add_argument("--parquet_out", type=str, help="Output file name (parquet)")
+    parser.add_argument("--meta", action="store_true", help="Do not store images themselves, just metadata.")
     return parser.parse_args()
 
 
@@ -48,7 +49,7 @@ def main():
         if args.release:
             write_ncdf_L1b_release(dftop, args.ncdf_out, conf.CHANNEL, conf.VERSION, args.release)
         else:
-            write_ncdf_L1b(dftop, args.ncdf_out, conf.CHANNEL, conf.VERSION)
+            write_ncdf_L1b(dftop, args.ncdf_out, conf.CHANNEL, conf.VERSION, im_calibrated=not args.meta)
     if args.parquet_out:
         store_as_parquet(dftop, f"{args.parquet_out}.parquet.gzip")
         # dftop.to_parquet(f"{args.parquet_out}.parquet.gzip", compression='gzip', engine='fastparquet')

@@ -6,13 +6,12 @@ import scipy.sparse as sp
 from skyfield import api as sfapi
 from skyfield.framelib import itrs
 from mats_l2_processing.grids import get_los_ecef, get_steps_in_local_grid
-from mats_l2_processing.util import multiprocess, print_times
+from mats_l2_processing.util import multiprocess
+from mats_l2_processing.oem import csr_clear_row
 from sorcery import dict_of
 import time
 from itertools import product, chain
 import logging
-import tracemalloc
-# %%
 
 
 def prepare_profiles(ch, vnames, col, rows):
@@ -200,7 +199,7 @@ def calc_obs_image(image, common_args):
     return image_profiles[0], image_profiles[1], image_tanalts
 
 
-def calc_K(jb, rt_data, o2, atm, xsc, valid_obs, processes, fx_only=False, verify_results=False):
+def calc_K(jb, rt_data, o2, atm, xsc, valid_obs, processes, fx_only=False, debug_nan=False):
     multi_start = time.time()
     pname = "Forward model" if fx_only else "Jacobian"
     res = multiprocess(calc_K_image, jb["data"], jb["image_vars"], processes,
@@ -219,19 +218,25 @@ def calc_K(jb, rt_data, o2, atm, xsc, valid_obs, processes, fx_only=False, verif
             fxl[i].append(im_fx[i])
     del im_K
     sort_start = time.time()
-    logging.log(15, f"Jacobian: Stacking took {sort_start - stack_start:.1f} s")
+    logging.log(15, f"{pname}: Stacking took {sort_start - stack_start:.1f} s")
     if not fx_only:
         K.sort_indices()
-    logging.log(15, f"Jacobian: Sorting took {time.time() - sort_start:.1f} s")
+    logging.log(15, f"{pname}: Sorting took {time.time() - sort_start:.1f} s")
 
     fx = np.stack([np.array(list(chain.from_iterable(lis))) for lis in fxl], axis=0)
     calc_end = time.time()
-    logging.log(15, f"Jacobian: Jacobian calculated in  {calc_end - multi_start:.1f} s")
+    logging.log(15, f"{pname}: Jacobian calculated in  {calc_end - multi_start:.1f} s")
 
-    if verify_results:
-        assert not np.isnan(fx).any(), f"{pname}: Nan's in fx!"
-        if not fx_only:
-            assert not np.isnan(K.max()), f"{pname}: Nan's in K!"
+    if np.isnan(fx).any():
+        if debug_nan:
+            logging.warn(f"{pname}: Nan's encountered in fx!")
+            if not fx_only:
+                for i in np.argwhere(np.isnan(fx)):
+                    csr_clear_row(K, i)
+        else:
+            raise RuntimeError(f"{pname}: Nan's encountered in fx! Abort!")
+    if not fx_only:
+        assert not np.isnan(K.max()), f"{pname}: Nan's in Jacobian! Abort!"
         logging.log(15, f"Jacobian: Jacobian checked for Nan's  {time.time() - calc_end:.1f} s")
 
     return None if fx_only else K, fx

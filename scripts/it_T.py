@@ -54,7 +54,8 @@ def get_args():
     parser.add_argument("--load_jacobian", action="store_true",
                         help="Load first iteration jacobian from a file. Overrides --save_jacobian.")
     parser.add_argument("--debug_nan", action="store_true",
-                        help="Add additional checks to catch nan's. Slow and requires extra memory!")
+                        help="Do not abort immediately if Nan's encountered, warn and work around instead. " +
+                        "Intended for debugging. DO NOT USE FOR PRODUCTION!")
     return parser.parse_args()
 
 
@@ -107,7 +108,7 @@ def main():
 
     logging.info("Starting LM iteration...")
     invm.lm_solve(atm_apr, y, tan_alts, Se_inv, Sa_inv.tocsr(), terms, conf, jb, rt_data, o2, args.processes,
-                  args.prefix, save_K=args.save_jacobian, load_K=args.load_jacobian, verify=args.debug_nan)
+                  args.prefix, save_K=args.save_jacobian, load_K=args.load_jacobian, debug_nan=args.debug_nan)
 
 
 if __name__ == "__main__":

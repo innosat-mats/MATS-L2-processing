@@ -283,7 +283,7 @@ def limit_alt(jb, y, tan_alts, alt_range):
 
 
 def lm_solve(atm_apr, y, tan_alts, Seinv, Sainv, terms, conf, jb, rt_data, o2, nproc, prefix,
-             save_K=False, load_K=False, verify=False):
+             save_K=False, load_K=False, debug_nan=False):
     scales = (conf.VER_SCALE, conf.T_SCALE)
     bounds = (conf.VER_BOUNDS, conf.T_BOUNDS)
     lm_start_time = time.time()
@@ -326,17 +326,17 @@ def lm_solve(atm_apr, y, tan_alts, Seinv, Sainv, terms, conf, jb, rt_data, o2, n
         best_sol, sol = {}, {}
         if it > 1:
             del K  # Clear previous Jacobian
-            K, fxp = calc_K(jb, rt_data, o2, x2atm(xp, atm_shape, scales), xsc, valid_alt, nproc, verify_results=verify)
+            K, fxp = calc_K(jb, rt_data, o2, x2atm(xp, atm_shape, scales), xsc, valid_alt, nproc, debug_nan=debug_nan)
 
         lms = [lm_par * float(conf.LM_FAC) ** x for x in range(-1, conf.LM_MAX_FACTS_PER_ITER + 1)]
         for j, lm in enumerate(lms):
             # xhat = oem.lm_iter(xa, xsc, xp, y_ar, fxp.flatten(), K, Seinv, Sainv, lm)
             sol["lm"] = lm
-            xhat = oem.mkl_iter_implicit(xa, xp, y_ar, fxp.flatten(), Sainv, Seinv, lm, K, conf)
+            xhat = oem.mkl_iter_implicit(xa, xp, y_ar, fxp.flatten(), Sainv, Seinv, lm, K, conf, debug_nan=debug_nan)
             sol["sol"] = reset_invalid(xhat, scales, bounds)
             sol["fx"] = calc_K(jb, rt_data, o2, x2atm(sol["sol"], atm_shape, scales), xsc,
-                               valid_alt, nproc, fx_only=True, verify_results=verify)[1]
-            sol["cf"] = oem.cost_func(xa, sol["sol"], y_ar, sol["fx"].flatten(), Seinv, Sainv)
+                               valid_alt, nproc, fx_only=True, debug_nan=debug_nan)[1]
+            sol["cf"] = oem.cost_func(xa, sol["sol"], y_ar, sol["fx"].flatten(), Seinv, Sainv, debug_nan=debug_nan)
             logging.info(f"Iteration {it}: derived solution with lambda={lm:.2e}, misfit {sol['cf']:.2e}.")
             contributions(sol["sol"], xa, y_ar, sol["fx"].flatten(), Seinv, terms, channels, atm_vars)
 

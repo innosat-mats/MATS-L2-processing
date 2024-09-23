@@ -4,10 +4,12 @@ from types import SimpleNamespace
 def make_conf(conf_type, conf_file, args):
     const, req = {}, {}
 
+    # Variables groups used in multiple configurations
     CCD_VARS = ['CCDSEL', 'NCSKIP', 'NRBIN', 'NCOL', 'NRSKIP', 'NROW', 'NCBINCCDColumns', "TEXPMS"]
     ATT_VARS = ["qprime", "afsAttitudeState", 'afsGnssStateJ2000', "EXPDate"]
     TP_VARS = ["TPlat", "TPlon", 'afsTangentPointECI']
 
+    # Configuration for temperature iterative solver
     const["iter_T"] = {"NEEDED_DATA": CCD_VARS + ATT_VARS + TP_VARS + ["IR1c", "IR2c",]}
     req["iter_T"] = ['START_TIME', 'STOP_TIME', 'ALT_GRID', 'ALONG_GRID', 'ACROSS_GRID', 'CHANNEL', "LM_IT_MAX",
                      "LM_PAR_0", "LM_FAC", "LM_MAX_FACTS_PER_ITER", "SA_WEIGHTS_T", "SA_WEIGHTS_VER", "EPSILON_IR1",
@@ -15,13 +17,20 @@ def make_conf(conf_type, conf_file, args):
                      "CONV_CRITERION", "RET_ALT_RANGE", "ASPECT_RATIO", "CG_ATOL", "CG_RTOL", "CG_MAX_STEPS",
                      "TOP_ALT", "STEP_SIZE", "COL_RANGE"]
 
+    # Configuration for IR common grid
     const["superpose"] = {"CCD_VARS": CCD_VARS + ATT_VARS,
                           "ALL_VARS": CCD_VARS + ATT_VARS + ["ImageCalibrated"],
                           "NCDF_VARS": CCD_VARS + ATT_VARS + TP_VARS + ["CalibrationErrors", "BadColumns"]}
     req["superpose"] = ["RECAL_FAC_IR", "START_TIME", "STOP_TIME", "VERSION"]
 
+    # Configuration for L2 input data preparation
     req["get_data"] = ['START_TIME', 'STOP_TIME', 'VERSION', 'CHANNEL', 'STR_LEN']
 
+    # Configuration for code that generates start/end times for each tomography run in a batch
+    req["intervals"] = ['BATCH_START_TIME', 'BATCH_STOP_TIME', 'TOMO_CONDITIONS', 'TOMO_DEFAULT_DURATION',
+                        'TOMO_MIN_DURATION', 'TOMO_MIN_OVERLAP']
+
+    # Default values for all of the above
     defaults = {"SA_WEIGHTS_T": [1, 500, 20000, 20000, 5e5],
                 "SA_WEIGHTS_VER": [1, 500, 20000, 20000, 5e5],
                 "LM_IT_MAX": 9,
@@ -47,7 +56,10 @@ def make_conf(conf_type, conf_file, args):
                 "TOP_ALT": 120e3,
                 "STEP_SIZE": 8e3,
                 "RECAL_FAC_IR": [1.0, 1.0, 1.0, 1.0],
-                "COL_RANGE": [0, 44]}
+                "COL_RANGE": [0, 44],
+                'TOMO_DEFAULT_DURATION': 600,
+                'TOMO_MIN_DURATION': 480,
+                'TOMO_MIN_OVERLAP': 90}
 
     if conf_file is not None:
         exec(open(conf_file).read())
@@ -55,7 +67,11 @@ def make_conf(conf_type, conf_file, args):
         raise ValueError(f"Unknown configuration type {conf_type}!")
     constants = const[conf_type] if conf_type in const.keys() else {}
     # if len(args.keys()) > 0:
-    pars = (vars(args), dict(globals(), **locals()), defaults)
+    try:
+        vargs = vars(args)
+    except Exception:
+        vargs = {}
+    pars = (vargs, dict(globals(), **locals()), defaults)
     # else:
     #    pars = (dict(globals(), **locals()), defaults)
     conf = set_vars(req[conf_type], pars) if conf_type in req.keys() else {}

@@ -135,9 +135,9 @@ def mkl_iter_wprep(xa, xp, y, fx, Sainv, Seinv, lmp, prep, K, conf):
     return xp - dx
 
 
-def mkl_iter_implicit(xa, xp, y, fx, Sainv, Seinv, lmp, K, conf):
+def mkl_iter_implicit(xa, xp, y, fx, Sainv, Seinv, lmp, K, conf, debug_nan=False):
     tic = time.time()
-    KSey = mdot(Sainv, xp - xa) + mdot(K.T, Seinv @ (fx - y))
+    KSey = mdot(Sainv, xp - xa) + mdot(K.T, Seinv @ nannorm((fx - y), "fx", abort=(not debug_nan)))
     logging.log(15, "Solver: b calculated.")
     dx, resid_norm, iters = mkl_cg_implicit(K, KSey, Seinv, Sainv, lmp, x_init=np.zeros_like(xp),
                                             atol=conf.CG_ATOL, rtol=conf.CG_RTOL, maxiter=conf.CG_MAX_STEPS)
@@ -273,12 +273,23 @@ def mkl_Adot(vec, K, Seinv, Sainv, lm):
     return mdot(K.T, Seinv @ mdot(K, vec)) + mdot(Sainv, vec) + lm * vec
 
 
-def cost_func(x, xa, y, fx, Seinv, Sainv):
+def cost_func(x, xa, y, fx, Seinv, Sainv, debug_nan=False):
     xr = x - xa
-    yr = y - fx
+    yr = nannorm(y - fx, "fx", abort=(not debug_nan))
     print(y.shape, fx.shape, Seinv.shape, x.shape, xa.shape, Sainv.shape)
     return yr.T @ Seinv @ yr + xr.T @ Sainv @ xr
 
 
 def csr_clear_row(csr, row):
     csr.data[csr.indptr[row]:csr.indptr[row + 1]] = 0
+
+
+def nannorm(data, calc_name, abort=True):
+    if np.isnan(data).any():
+        if abort:
+            raise RuntimeError(f"ERROR: Nan's encountered in {calc_name} calculation! Abort!")
+        else:
+            logging.warn(f"WARNING: Nan's encountered in {calc_name} calculation, resetting norms to zero.")
+            return np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
+    else:
+        return data
