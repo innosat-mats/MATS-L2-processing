@@ -58,6 +58,15 @@ def multiprocess(func, dataset, image_args, nproc, common_args, unzip=False):
         return res
 
 
+def running_mean(data, hw):
+    res = np.zeros_like(data)
+    width = int(2 * hw + 1)
+    res[hw:-hw] = np.convolve(data, np.ones(width) / width, mode='valid')
+    res[0:hw] = res[hw]
+    res[-hw:] = res[-hw - 1]
+    return res
+
+
 def print_times(times, titles):
     assert len(titles) + 1 == len(times)
     res = ""

@@ -104,6 +104,14 @@ def lm_iter(xa, xsc, xp, y, fx, K, Seinv, Sainv, lmp):
     return xp - dx
 
 
+def mkl_solve_1D(ver0, ver_apr, y, K, fx, Sainv, Seinv):
+    tic = time.time()
+    KSey = mdot(Sainv, ver0 - ver_apr) + mdot(K.T, Seinv @ (y - fx))
+    dx, resid_norm, iters = mkl_cg_implicit(K, KSey, Seinv, Sainv, 0.0, x_init=ver0)
+    logging.log(15, f"Solver: calculated new atmosphere state in {time.time() - tic:.3f} s.")
+    return dx
+
+
 def mkl_lm_prep_og(K, xsc, Sainv, Seinv):
     tic = time.time()
 
@@ -247,7 +255,7 @@ def mkl_cg_core(Adot, A_numrows, b, x_init=None, atol=0, rtol=1e-5, maxiter=5000
         normr = np.dot(residual, residual)
 
         sqnormr = np.sqrt(normr)
-        logging.log(15, f"CG: step {k} - {sqnormr / threshold}")
+        # logging.log(15, f"CG: step {k} - {sqnormr / threshold}")
         if sqnormr < threshold:
             logging.info(f"CG: converged in {k + 1} steps.")
             # rr = b - mdot(A, x)

@@ -2,7 +2,7 @@ import datetime as DT
 import numpy as np
 import argparse
 
-from mats_l2_processing.obs import time_offsets, cross_maps, reinterpolate, remove_background
+from mats_l2_processing.obs import time_offsets, cross_maps, reinterpolate, remove_background, remove_background_sep
 from mats_l2_processing.io import read_chn_from_pandas, add_ncdf_vars, write_ncdf_L1b
 from mats_l2_processing.parameters import make_conf
 from mats_l2_processing.util import get_filter
@@ -23,6 +23,7 @@ def get_args():
                         help="Directory where to look for parquet files.")
     parser.add_argument("--conf", type=str, help="Read configuration from file.")
     parser.add_argument("--ncdf_out", type=str, default="IRc.nc", help="Output file name (ncdf).")
+    parser.add_argument("--sep_background", action="store_true", help="Use IR4 as background for IR1, IR3 for IR2.")
     return parser.parse_args()
 
 
@@ -60,7 +61,10 @@ def main():
         ir1, ir2, ir3, ir4 = [x * 0.1 for x in [ir1, ir2, ir3, ir4]]
 
     # IR1 and IR2 on the same (IR1) grid with backgrounds removed
-    ir1c, ir2c = remove_background(ir1, ir2, ir3, ir4, recal=conf.RECAL_FAC_IR)
+    if args.sep_background:
+        ir1c, ir2c = remove_background_sep(ir1, ir2, ir3, ir4, recal=conf.RECAL_FAC_IR)
+    else:
+        ir1c, ir2c = remove_background(ir1, ir2, ir3, ir4, recal=conf.RECAL_FAC_IR)
 
     # Write a netCDF file with IR1 data
     df1 = df[df["channel"] == "IR1"]

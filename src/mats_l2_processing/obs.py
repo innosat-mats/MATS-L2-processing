@@ -91,3 +91,14 @@ def remove_background(ir1, ir2, ir3, ir4, recal=None):
     ir1c -= bgr
     ir2c -= bgr
     return ir1c * 3.57, ir2c * 8.16
+
+
+def remove_background_sep(ir1, ir2, ir3, ir4, recal=None):
+    ir1c, ir2c = ir1.copy(), ir2.copy()
+    if recal is not None:
+        ir1c, ir2c, ir3, ir4 = [recal[i] * arr for i, arr in enumerate([ir1c, ir2c, ir3, ir4])]
+    ir3_off, ir4_off = [np.mean(arr[:, -11:-7, :], axis=1)[:, np.newaxis, :] / 1.05 for arr in [ir3, ir4]]
+    # bgr = (ir3 - ir3_off + ir4 - ir4_off) / 2
+    ir1c -= ir4 - ir4_off
+    ir2c -= ir3 - ir3_off
+    return ir1c * 3.57, ir2c * 8.16

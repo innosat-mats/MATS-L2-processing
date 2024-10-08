@@ -4,11 +4,12 @@ import datetime as DT
 import argparse
 from os.path import expanduser
 import xarray as xr
-import scipy.sparse as sp
+# import scipy.sparse as sp
 
 from mats_l2_processing import grids, parameters, io, atm
 from mats_l2_processing import forward_model as fwdm
 from mats_l2_processing import inverse_model as invm
+from mats_l2_processing.atm import VER_1D, apr_from_1D
 
 logging.addLevelName(15, "PROG")
 logging.basicConfig(level=15, format='%(levelname)-5s %(asctime)s %(message)s',
@@ -27,8 +28,8 @@ def get_args():
                         help="Radiative transfer data from npz file.")
     parser.add_argument("--clim_data", type=str, default=expanduser("~/L2_data/msis_cmam_climatology_200.nc"),
                         help="Climatological data from netCDF file.")
-    parser.add_argument("--ver_apr", type=str, default=expanduser("~/L2_data/IR2_clim_1.nc"),
-                        help="VER climatology from netCDF file.")
+    parser.add_argument("--ver_apr", type=str,
+                        help="VER climatology from netCDF file. Use 1D retrieval if not specified.")
     parser.add_argument("--t_apr", type=str, default=expanduser("~/L2_data/T_clim_saber.nc"),
                         help="T climatology from netCDF file.")
     parser.add_argument("--start_time", dest="START_TIME", type=int, nargs=6, help="Start time for data set.")
@@ -69,26 +70,34 @@ def main():
     mean_time = DT.datetime.fromtimestamp(sum(map(DT.datetime.timestamp, [start_time, stop_time])) / 2)
 
     logging.info("Loading input data...")
-    data = io.read_L1_ncdf(args.obs_data, start_time=start_time, stop_time=stop_time, var=const.NEEDED_DATA)
+    metadata = io.read_L1_ncdf(args.obs_data, start_time=start_time, stop_time=stop_time, var=const.NEEDED_DATA)
+    main_data = io.read_L1_ncdf(args.obs_data, start_time=start_time, stop_time=stop_time, var=["IR1c", "IR2c"])
     rt_data = np.load(expanduser(args.rt_data))
     rt_data = {name: rt_data[name].copy() for name in ["filters", "sigma", "emission", "sigma_grad", "emission_grad"]}
     clim_data = xr.load_dataset(expanduser(args.clim_data))
-    ver_apr = io.read_ncdf(args.ver_apr, ["altitude", "latitude", "VER"])
+    # ver_apr = io.read_ncdf(args.ver_apr, ["altitude", "latitude", "VER"])
 
     logging.info("Initializing geometry...")
-    row_range = args.row_range if args.row_range else (0, data["NROW"][0])
+    row_range = args.row_range if args.row_range else (0, metadata["NROW"][0])
     columns, rows = [np.arange(r[0], r[1], 1) for r in [conf.COL_RANGE, row_range]]
-    local_earth_radius = grids.geoid_radius(np.deg2rad(np.mean(data['TPlat'])))
+    local_earth_radius = grids.geoid_radius(np.deg2rad(np.mean(metadata['TPlat'])))
     grid_proto = [grids.make_grid_proto(conf.ALT_GRID, scaling=1e3, offset=local_earth_radius),
                   grids.make_grid_proto(conf.ACROSS_GRID, scaling=1e3 / local_earth_radius),
                   grids.make_grid_proto(conf.ALONG_GRID, scaling=1e3 / local_earth_radius)]
-    jb = grids.initialize_geometry(data, columns, rows, conf, grid_proto=grid_proto, processes=args.processes)
+    geo = grids.initialize_geometry(metadata, columns, rows, conf, grid_proto=grid_proto, processes=args.processes)
 
     if args.verify_grid:
-        fwdm.test_grid(jb, args.processes)
+        fwdm.test_grid(geo, args.processes)
     # Interpolate background atmosphere on retrieval grid
     logging.info("Initializing atmospheric data...")
-    o2, atm_apr = atm.get_background(jb, mean_time, clim_data, ver_apr)
+    o2, T_apr = atm.get_background(geo, mean_time, clim_data)
+    if args.ver_apr is None:
+        ver_1D, along_dists, geo1d = VER_1D(geo, main_data, mean_time, clim_data, rt_data, conf, [22], args.processes)
+        ver_apr = apr_from_1D(geo1d, geo, ver_1D, along_dists, decay_range=[105, 110])
+    else:
+        ver_apr = io.read_ncdf(args.ver_apr, ["altitude", "latitude", "VER"])
+    atm_apr = [ver_apr, T_apr]
+
     if args.o2_fact:
         o2 *= args.o2_fact
     if args.ver_fact:
@@ -97,18 +106,11 @@ def main():
         atm_apr = [atm_apr[0], atm_apr[1] + args.t_offset]
 
     logging.info("Processing observation data...")
-    y, tan_alts = fwdm.calc_obs(jb, args.processes)
-
-    logging.info("Generating covariance matrices...")
-    Sa_inv, terms = invm.Sa_inv_multivariate((jb["rad_grid_c"], jb["acrosstrack_grid_c"] * local_earth_radius,
-                                              jb["alongtrack_grid_c"] * local_earth_radius),
-                                             [conf.SA_WEIGHTS_VER, conf.SA_WEIGHTS_T], store_terms=args.reg_analysis,
-                                             volume_factors=True, aspect_ratio=conf.ASPECT_RATIO)
-    Se_inv = sp.diags(np.ones([y.flatten().shape[0]]), 0).astype('float32') / (conf.RAD_SCALE ** 2 * len(y))
+    obs = fwdm.calc_obs(geo, main_data, conf, args.processes)
 
     logging.info("Starting LM iteration...")
-    invm.lm_solve(atm_apr, y, tan_alts, Se_inv, Sa_inv.tocsr(), terms, conf, jb, rt_data, o2, args.processes,
-                  args.prefix, save_K=args.save_jacobian, load_K=args.load_jacobian, debug_nan=args.debug_nan)
+    invm.lm_solve(atm_apr, o2, obs, geo, conf, rt_data, args.processes, args.prefix,
+                  save_K=args.save_jacobian, load_K=args.load_jacobian, debug_nan=args.debug_nan)
 
 
 if __name__ == "__main__":

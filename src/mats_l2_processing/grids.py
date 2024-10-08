@@ -1,6 +1,7 @@
 import numpy as np
 from mats_l1_processing.pointing import pix_deg
 from mats_l2_processing.util import get_image
+from mats_l2_processing.regularisation import Sa_inv_multivariate, Sa_inv_tikhonov
 from scipy.spatial.transform import Rotation as R
 from skyfield import api as sfapi
 from skyfield.framelib import itrs
@@ -255,7 +256,7 @@ def generate_local_transform(data, timescale):
 
 
 def initialize_geometry(data, columns, rows, conf, grid_proto=None, processes=1):
-    logging.info("Initializing 3-D grid...")
+    logging.info("Initializing grid...")
     grid_def = {"columns": columns, "rows": rows, "stepsize": conf.STEP_SIZE, "top_alt": conf.TOP_ALT}
     grid_def["timescale"] = sfapi.load.timescale()
     grid_def["ecef_to_local"] = generate_local_transform(data, grid_def["timescale"])
@@ -290,5 +291,31 @@ def initialize_geometry(data, columns, rows, conf, grid_proto=None, processes=1)
 
     geo["image_vars"] = ['CCDSEL', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'NROW',
                          'EXPDate', 'qprime', 'afsGnssStateJ2000', 'afsAttitudeState',
-                         "IR1c", "IR2c", "TPlon", "TPlat", "TEXPMS"]
+                         "TPlon", "TPlat", "TEXPMS"]
+
+    local_earth_radius = geoid_radius(np.deg2rad(np.mean(data['TPlat'])))
+    Sa_inv, terms = Sa_inv_multivariate((geo["rad_grid_c"], geo["acrosstrack_grid_c"] * local_earth_radius,
+                                         geo["alongtrack_grid_c"] * local_earth_radius),
+                                        [conf.SA_WEIGHTS_VER, conf.SA_WEIGHTS_T], store_terms=True,
+                                        volume_factors=True, aspect_ratio=conf.ASPECT_RATIO)
+    geo["Sa_inv"] = Sa_inv.tocsr()
+    geo["terms"] = terms
     return geo
+
+
+def initialize_1D_geo(geo3d, conf, columns):
+    res = {"columns": columns}
+    cpvars = ["stepsize", "top_alt", "data", "timescale", "ecef_to_local", "rad_grid", "rad_grid_c", "k_alt_range",
+              "image_vars", "rows"]
+    for var3d in cpvars:
+        res[var3d] = geo3d[var3d].copy() if hasattr(geo3d[var3d], "copy") else geo3d[var3d]
+
+    res["size"] = len(res["data"]["EXPDate"])
+    res["edges"] = geo3d["edges"][0]
+    widths = np.diff(res["edges"])
+    res["is_regular_grid"] = all(np.abs(widths - np.mean(widths)) < 0.001 * np.abs(np.mean(widths)))
+
+    res["alt"] = res["rad_grid_c"][np.newaxis, :] - np.array([geoid_radius(np.deg2rad(lat))
+                                                              for lat in res["data"]["TPlat"]])[:, np.newaxis]
+    res["excludeK"] = np.logical_or(res["alt"] < res["k_alt_range"][0] * 1e3, res["alt"] > res["k_alt_range"][1] * 1e3)
+    return res

@@ -1,4 +1,3 @@
-# %%
 import numpy as np
 from mats_utils.geolocation.coordinates import col_heights  # , findheight
 from scipy.spatial.transform import Rotation as R
@@ -41,6 +40,15 @@ def grad_path2grid_weights(pathGrad, gridVar, pWeights, cumulative=False):
     for w in it:
         coord = pWeights[0][it.multi_index[0], it.multi_index[1], :]
         res[:, coord[0], coord[1], coord[2]] += w * pathGrad[:, it.multi_index[0]]
+    return res
+
+
+def grad_path2grid_weights_1D(pathGrad, gridVar, pWeights, cumulative=False):
+    res = np.zeros(gridVar.shape)
+    it = np.nditer(pWeights[1], flags=["multi_index"])
+    for w in it:
+        coord = pWeights[0][it.multi_index[0], it.multi_index[1]]
+        res[coord] += w * pathGrad[it.multi_index[0]]
     return res
 
 
@@ -100,6 +108,21 @@ def calc_rad_ng(pos, path_step, o2s, atm, rt_data, edges):
     return res
 
 
+def calc_rad_1DVER(pos, path_step, o2s, atm, rt_data, edges):
+    interppos_func = interppos_1D_linear
+    VER, Temps = [np.array(arr) for arr in atm]
+    startT = np.linspace(100, 600, 501)
+    pathtemps, o2, pathVER, pWeights = interppos_func(pos, [Temps, o2s, VER], edges)
+    sigmas, emissions = interp_T(pathtemps, startT, [rt_data[name] for name in ["sigma", "emission"]])
+    exp_tau = np.exp(-(sigmas * o2).cumsum(axis=1) * path_step * 1e2) * (path_step / 4 / np.pi * 1e6)
+    del sigmas
+    path_tau_em = exp_tau * emissions
+    path_tau_em = rt_data["filters"][1, :] @ path_tau_em
+    res = np.sum(path_tau_em * pathVER, axis=0)
+    grad_VER = grad_path2grid_weights_1D(path_tau_em, VER, pWeights)
+    return res, grad_VER
+
+
 def interp_T(x, xs, ys):
     step = xs[1] - xs[0]
     ix = np.array(np.floor((x - xs[0]) / step), dtype=int)
@@ -144,6 +167,21 @@ def interppos_trilinear(pos, data, edges):
     return *[res[i, :] for i in range(len(data))], (coords, iw / norms[:, np.newaxis])
 
 
+def interppos_1D_linear(pos, data, edges):
+    num_pos = len(pos)
+    coords, iw, res = np.empty((num_pos, 2), dtype=int), np.zeros((num_pos, 2)), np.zeros((len(data), num_pos))
+    coords[:, 1] = np.searchsorted(edges, pos, sorter=None)
+    coords[:, 0] = coords[:, 1] - 1
+    iw[:, 1] = pos - edges[coords[:, 0]]
+    iw[:, 0] = edges[coords[:, 1]] - pos
+
+    for j, dat in enumerate(data):
+        res[j, :] += iw[:, 0] * data[j][coords[:, 0]] + iw[:, 1] * data[j][coords[:, 1]]
+    dists = edges[coords[:, 1]] - edges[coords[:, 0]]
+    res /= dists[np.newaxis, :]
+    return *[res[i, :] for i in range(len(data))], (coords, iw / dists[:, np.newaxis])
+
+
 def calc_los_image(image, common_args):
     # tic = time.time()
     columns, rows, ecef_to_local, timescale, top_alt, stepsize = common_args
@@ -178,10 +216,15 @@ def test_grid(jb, processes):
     logging.info("Geometry successfully verified!")
 
 
-def calc_obs(jb, processes):
-    res = multiprocess(calc_obs_image, jb["data"], jb["image_vars"], processes,
-                       [jb["columns"], jb["rows"]], unzip=True)
-    return np.stack(res[:2], axis=0), res[2]
+def calc_obs(geo, main_data, conf, processes):
+    data = geo["data"].copy()
+    data.update(main_data)
+    obs = multiprocess(calc_obs_image, data, geo["image_vars"] + ["IR1c", "IR2c"],
+                       processes, [geo["columns"], geo["rows"]], unzip=True)
+    res = {"y": np.stack(obs[:2], axis=0), "tan_alts": obs[2]}
+    size = res["y"].flatten().shape[0]
+    res["Se_inv"] = sp.diags(np.ones((size)), 0).astype('float32') / (conf.RAD_SCALE ** 2 * len(res["y"]))
+    return res
 
 
 def calc_obs_image(image, common_args):
@@ -288,3 +331,37 @@ def calc_K_image(image, common_args):
     toc = time.time()
     logging.log(15, f"{pname}: Image {image['num_image']} processed in {toc-tic:.1f} s.")
     return None if fx_only else image_K, image_calc_profiles
+
+
+def calc_K_image_1D(image, common_args):
+    edges, is_regular_grid, columns, rows, ecef_to_local, rad_grid, stepsize, top_alt, excludeK, timescale, xsc, o2, \
+        atm, rt_data, valid_obs = common_args
+
+    nimg = image["num_image"]
+    image_calc_profiles = []
+    valid_obs_im = valid_obs[image["num_image"], :, :]
+    image["los"] = calc_los_image(image, (columns, rows, ecef_to_local, timescale, top_alt, stepsize))
+    mean_along = np.array([np.array([image["los"][i][j][:, 2].mean() for j in range(len(rows))]).mean()
+                           for i in range(len(columns))]).mean()
+
+    image_k_row = 0
+    image_K = sp.lil_array((len(rows) * len(columns), (len(rad_grid) - 1) * len(columns)))
+    # breakpoint()
+    tic = time.time()
+    for i, column in enumerate(columns):
+        for j, row in enumerate(rows):
+            if valid_obs_im[i, j]:
+                ircalc, VERgrad = calc_rad_1DVER(image["los"][i][j][:, 0], stepsize, o2[nimg, :],
+                                                 [atm[0][nimg, :], atm[1][nimg, :]], rt_data, edges)
+                if excludeK is not None:
+                    VERgrad[excludeK[nimg, :]] = 0.0
+                image_K[image_k_row, :] = VERgrad
+            else:
+                ircalc = 0.0
+            image_k_row += 1
+            image_calc_profiles.append(ircalc)
+    image_K = image_K.tocsr()
+    image_K *= xsc
+    toc = time.time()
+    logging.log(15, f"Jacobian: Image {image['num_image']} processed in {toc-tic:.1f} s.")
+    return image_K, image_calc_profiles, mean_along
