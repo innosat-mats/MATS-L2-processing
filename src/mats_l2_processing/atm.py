@@ -1,19 +1,19 @@
 import numpy as np
 import scipy.sparse as sp
 from scipy.interpolate import RectBivariateSpline, LinearNDInterpolator, CloughTocher2DInterpolator
-from mats_l2_processing.grids import initialize_1D_geo, geoid_radius
 from mats_l2_processing.regularisation import Sa_inv_tikhonov
-from mats_l2_processing.util import multiprocess, get_image, running_mean
-from mats_l2_processing.forward_model import calc_K_image_1D
-from mats_l2_processing.inverse_model import limit_alt
-from mats_l2_processing.oem import mkl_solve_1D
+from mats_l2_processing.util import multiprocess, get_image, running_mean, geoid_radius
+# from mats_l2_processing.forward_model import calc_K_image_1D
+# from mats_l2_processing.inverse_model import limit_alt
+# from mats_l2_processing.oem import mkl_solve_1D
 from mats_utils.geolocation.coordinates import col_heights
 from matplotlib import pyplot as plt
 import sys
+import netCDF4 as nc
 
 
-def get_background(jb, mean_time, clim_data, t_apr=None):
-    alt, lat, lon = jb["alt"] / 1000, jb["lat"], jb["lon"]
+def get_background(grid, mean_time, clim_data, t_apr=None, full_ver=None):
+    alt, lat, lon = grid.alt / 1000, grid.lat, grid.lon
     month = mean_time.month
 
     # ver = 2e3 * 1e6 * stats.norm.pdf(alt, 88, 4.5) + 2e2 * 1e6 * np.exp(-(alt - 60) / 20)
@@ -42,15 +42,16 @@ def get_background(jb, mean_time, clim_data, t_apr=None):
     o2 *= 1e-6
 
     # Experimental sideload of VER apriori from result:
-    # with nc.Dataset('/home/lk/tests/T_tomo/stest11/first/t4_L2.nc', 'r') as nf:
-    #    vert = nf["VER"][0, :, :, :].data
-    # assert vert.shape == ver.shape, f"VER:{ver.shape}, T:{T.shape}"
-    # ver = vert.copy()
+    if full_ver is not None:
+        with nc.Dataset(full_ver, 'r') as nf:
+            vert = nf["VER"][0, :, :, :].data
+        assert vert.shape == T.shape, f"VER:{vert.shape}, T:{T.shape}"
+        ver = vert.copy()
+        assert not np.isnan(ver).any(), "ver a priori has NaN's!"
 
     assert not np.isnan(T).any(), "T a priori has NaN's!"
     assert not np.isnan(o2).any(), "o2 a priori has NaN's!"
-    # assert not np.isnan(ver).any(), "ver a priori has NaN's!"
-    return o2, T
+    return o2, T, None if full_ver is None else ver
 
 
 def plot_profiles(alt, ver, idxs, fname):

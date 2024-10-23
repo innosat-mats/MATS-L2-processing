@@ -10,10 +10,10 @@ def make_conf(conf_type, conf_file, args):
     TP_VARS = ["TPlat", "TPlon", 'afsTangentPointECI']
 
     # Configuration for temperature iterative solver
-    const["iter_T"] = {"NEEDED_DATA": CCD_VARS + ATT_VARS + TP_VARS}
-    req["iter_T"] = ['START_TIME', 'STOP_TIME', 'ALT_GRID', 'ALONG_GRID', 'ACROSS_GRID', 'CHANNEL', "LM_IT_MAX",
-                     "LM_PAR_0", "LM_FAC", "LM_MAX_FACTS_PER_ITER", "SA_WEIGHTS_T", "SA_WEIGHTS_VER", "EPSILON_IR1",
-                     "EPSILON_IR2", "TP_ALT_RANGE", "VER_SCALE", "T_SCALE", "VER_BOUNDS", "T_BOUNDS", "RAD_SCALE",
+    const["iter_T"] = {"NEEDED_DATA": CCD_VARS + ATT_VARS + TP_VARS, "TP_VARS": CCD_VARS + ATT_VARS}
+    req["iter_T"] = ['START_TIME', 'STOP_TIME', 'ALT_GRID', 'ALONG_GRID', 'ACROSS_GRID', 'CHANNELS', "LM_IT_MAX",
+                     "LM_PAR_0", "LM_FAC", "LM_MAX_FACTS_PER_ITER", "SA_WEIGHTS", "RET_QTY", "AUX_QTY",
+                     "EPSILON_WEIGHTS", "TP_ALT_RANGE", "SCALES", "BOUNDS", "RAD_SCALE", "INTERPOLATOR",
                      "CONV_CRITERION", "RET_ALT_RANGE", "ASPECT_RATIO", "CG_ATOL", "CG_RTOL", "CG_MAX_STEPS",
                      "TOP_ALT", "STEP_SIZE", "COL_RANGE", "SA_WEIGHTS_1D_APR", "CHANNEL_1D_APR", "MEDCOLS_1D_APR"]
 
@@ -31,20 +31,13 @@ def make_conf(conf_type, conf_file, args):
                         'TOMO_MIN_DURATION', 'TOMO_MIN_OVERLAP']
 
     # Default values for all of the above
-    defaults = {"SA_WEIGHTS_T": [1, 500, 20000, 20000, 5e5],
-                "SA_WEIGHTS_VER": [1, 500, 20000, 20000, 5e5],
-                "SA_WEIGHTS_1D_APR": [1e-1, 1e3],
+    defaults = {"SA_WEIGHTS_1D_APR": [1e-1, 1e3],
                 "LM_IT_MAX": 9,
                 "LM_PAR_0": 0.1,
                 "LM_FAC": 10,
                 "LM_MAX_FACTS_PER_ITER": 7,
-                "EPSILON_IR1": 1.0,
-                "EPSILON_IR2": 1.0,
+                "EPSILON_WEIGHTS": [1.0, 1.0],
                 "TP_ALT_RANGE": (60, 110),
-                "VER_SCALE": 1e4,
-                "T_SCALE": 1e2,
-                "VER_BOUNDS": (0, 2e8),
-                "T_BOUNDS": (100, 600),
                 "RAD_SCALE": 1e14,
                 "CONV_CRITERION": 0.96,
                 "RET_ALT_RANGE": (60, 108),
@@ -62,7 +55,8 @@ def make_conf(conf_type, conf_file, args):
                 'TOMO_MIN_DURATION': 480,
                 'TOMO_MIN_OVERLAP': 90,
                 "CHANNEL_1D_APR": "IR2c",
-                "MEDCOLS_1D_APR": 5}
+                "MEDCOLS_1D_APR": 5,
+                "INTERPOLATOR": "LINEAR"}
 
     if conf_file is not None:
         exec(open(conf_file).read())

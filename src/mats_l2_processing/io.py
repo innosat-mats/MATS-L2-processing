@@ -3,8 +3,7 @@ import pandas
 import datetime as DT
 import netCDF4 as nc
 import logging
-from mats_l2_processing.grids import geoid_radius
-from mats_l2_processing.util import DT2seconds
+from mats_l2_processing.util import DT2seconds, geoid_radius
 
 
 def read_ncdf(fname, vnames):

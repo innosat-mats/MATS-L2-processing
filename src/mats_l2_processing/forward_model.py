@@ -1,367 +1,169 @@
+from abc import ABC, abstractmethod
 import numpy as np
-from mats_utils.geolocation.coordinates import col_heights  # , findheight
-from scipy.spatial.transform import Rotation as R
 import scipy.sparse as sp
-from skyfield import api as sfapi
-from skyfield.framelib import itrs
-from mats_l2_processing.grids import get_los_ecef, get_steps_in_local_grid
-from mats_l2_processing.util import multiprocess
-from mats_l2_processing.oem import csr_clear_row
-from sorcery import dict_of
 import time
-from itertools import product, chain
 import logging
 
-
-def prepare_profiles(ch, vnames, col, rows):
-    cs = col_heights(ch, col, 10, spline=True)
-    tanalts = np.array(cs(rows))
-    profiles = [np.array(np.stack(ch[vname])[rows, col]) * 1e13 for vname in vnames]
-    return profiles, tanalts
+import mats_l2_processing.interpolator as interpolator
+from mats_l2_processing.util import multiprocess
 
 
-def select_data(df, num_profiles, start_index=0):
-    if num_profiles + start_index > len(df):
-        raise ValueError('Selected profiles out of bounds')
-    df = df.loc[start_index:start_index + num_profiles - 1]
-    df = df.reset_index(drop=True)
+class Forward_model(ABC):
+    def __init__(self, conf, const, grid, metadata, aux, combine_images=False, debug_nan=False):
+        self.grid = grid
+        self.metadata = metadata
+        self.combine_images = combine_images
 
+        for i in range(len(aux)):
+            assert aux[i].shape == tuple(grid.atm_shape[1:]), f"Auxiliary data variable {i} " +\
+                "has shape {aux[i].shape}, but grid is of shape {grid.atm_shape[1:]}"
+        self.aux = aux
 
-def grad_path2grid(pathGrad, gridVar, posidx, cumulative=False):
-    res = np.zeros((pathGrad.shape[0], *gridVar.shape))
-    for idx in range(pathGrad.shape[1]):
-        res[:, posidx[0][idx], posidx[1][idx], posidx[2][idx]] += pathGrad[:, idx]
-    return res
-
-
-def grad_path2grid_weights(pathGrad, gridVar, pWeights, cumulative=False):
-    res = np.zeros((pathGrad.shape[0], *gridVar.shape))
-    it = np.nditer(pWeights[1], flags=["multi_index"])
-    for w in it:
-        coord = pWeights[0][it.multi_index[0], it.multi_index[1], :]
-        res[:, coord[0], coord[1], coord[2]] += w * pathGrad[:, it.multi_index[0]]
-    return res
-
-
-def grad_path2grid_weights_1D(pathGrad, gridVar, pWeights, cumulative=False):
-    res = np.zeros(gridVar.shape)
-    it = np.nditer(pWeights[1], flags=["multi_index"])
-    for w in it:
-        coord = pWeights[0][it.multi_index[0], it.multi_index[1]]
-        res[coord] += w * pathGrad[it.multi_index[0]]
-    return res
-
-
-def calc_rad2(pos, path_step, o2s, atm, rt_data, edges):
-    interppos_func = interppos_trilinear
-    # times = [time.time()]
-    # titles = []
-    VER, Temps = [np.array(arr) for arr in atm]
-    startT = np.linspace(100, 600, 501)
-    pathtemps, o2, pathVER, pWeights = interppos_func(pos, [Temps, o2s, VER], edges)
-    # ##  o2, _ = interppos_func(pos, o2s, edges)
-    # ##  pathVER, _ = interppos_func(pos, VER, edges)
-    # times.append(time.time())
-    # titles.append("Path interpolation")
-    sigmas, sigmas_pTgrad, emissions, emissions_pTgrad = interp_T(pathtemps, startT, [rt_data[name] for name in
-        ["sigma", "sigma_grad", "emission", "emission_grad"]])
-    # #emissions, emissions_pTgrad = interp_and_grad_T(pathtemps, startT, rt_data["emission"], rt_data["emission_grad"])
-    # times.append(time.time())
-    # titles.append("Temp interpolation")
-    exp_tau = np.exp(-(sigmas * o2).cumsum(axis=1) * path_step * 1e2) * (path_step / 4 / np.pi * 1e6)
-    del sigmas
-    # times.append(time.time())
-    # titles.append("exp_tau")
-    # #emissions, emissions_pTgrad = interp_and_grad_T(pathtemps, startT, rt_data["emission"], rt_data["emission_grad"])
-    # #times.append(time.time())
-    # #titles.append("Emission interpolation")
-    grad_Temps = grad_path2grid_weights(rt_data["filters"] @ (exp_tau * emissions_pTgrad) * pathVER, Temps, pWeights)
-    # times.append(time.time())
-    # titles.append("Temp gradiant (emissions)")
-    del emissions_pTgrad
-    path_tau_em = exp_tau * emissions
-    grad_Temps -= grad_path2grid_weights(rt_data["filters"] @ (np.flip(np.cumsum(np.flip(path_tau_em * pathVER, axis=1), axis=1), axis=1) * sigmas_pTgrad) * o2, Temps, pWeights)
-    # times.append(time.time())
-    # titles.append("Temp gradient (tau)")
-    del sigmas_pTgrad, o2
-    path_tau_em = rt_data["filters"] @ path_tau_em
-    res = np.sum(path_tau_em * pathVER, axis=1)
-    grad_VER = grad_path2grid_weights(path_tau_em, VER, pWeights)
-    # times.append(time.time())
-    # titles.append("VER gradient")
-    # print_times(times, titles)
-    return res, grad_VER, grad_Temps
-
-
-def calc_rad_ng(pos, path_step, o2s, atm, rt_data, edges):
-    interppos_func = interppos_trilinear
-    VER, Temps = [np.array(arr) for arr in atm]
-    startT = np.linspace(100, 600, 501)
-    pathtemps, o2, pathVER, _ = interppos_func(pos, [Temps, o2s, VER], edges)
-    # ## o2, _ = interppos_func(pos, o2s, edges)
-    # ## pathVER, _ = interppos_func(pos, VER, edges)
-    sigmas, emissions = interp_T(pathtemps, startT, [rt_data[name] for name in ["sigma", "emission"]])
-    exp_tau = np.exp(-(sigmas * o2).cumsum(axis=1) * path_step * 1e2) * (path_step / 4 / np.pi * 1e6)
-    del sigmas
-    path_tau_em = rt_data["filters"] @ (exp_tau * emissions)
-    res = np.sum(path_tau_em * pathVER, axis=1)
-    return res
-
-
-def calc_rad_1DVER(pos, path_step, o2s, atm, rt_data, edges):
-    interppos_func = interppos_1D_linear
-    VER, Temps = [np.array(arr) for arr in atm]
-    startT = np.linspace(100, 600, 501)
-    pathtemps, o2, pathVER, pWeights = interppos_func(pos, [Temps, o2s, VER], edges)
-    sigmas, emissions = interp_T(pathtemps, startT, [rt_data[name] for name in ["sigma", "emission"]])
-    exp_tau = np.exp(-(sigmas * o2).cumsum(axis=1) * path_step * 1e2) * (path_step / 4 / np.pi * 1e6)
-    del sigmas
-    path_tau_em = exp_tau * emissions
-    path_tau_em = rt_data["filters"][1, :] @ path_tau_em
-    res = np.sum(path_tau_em * pathVER, axis=0)
-    grad_VER = grad_path2grid_weights_1D(path_tau_em, VER, pWeights)
-    return res, grad_VER
-
-
-def interp_T(x, xs, ys):
-    step = xs[1] - xs[0]
-    ix = np.array(np.floor((x - xs[0]) / step), dtype=int)
-    w0 = (xs[ix + 1] - x) / step
-    w1 = (x - xs[ix]) / step
-    return [w0 * y[ix, :].T + w1 * y[ix + 1, :].T for y in ys]
-
-
-def interppos_regular_nearest(pos, inArray, edges, edge_steps):
-    iz, iy, ix = [np.array(np.floor((pos[:, i] - edges[i][0])[:, :, :, np.newaxis] / edge_steps[i]),
-                           dtype=int) for i in range(3)]
-    iw = np.ones_like(iz)
-    # for c in range(3):
-    #     print(c, edges[c].shape, edges[c][0], np.diff(edges[c]).mean(), edges[c][-1])
-    #     print(c, pos[:, c])
-    return inArray[iz, iy, ix], (iz, iy, ix, iw)
-
-
-def interppos_rectilinear_nearest(pos, inArray, edges):
-    crd = np.stack([np.searchsorted(edges[i], pos[:, i], sorter=None) - 1 for i in range(3)], axis=-1)[:, np.newaxis, :]
-    return inArray[crd[:, 0, 0], crd[:, 0, 1], crd[:, 0, 2]], (crd, np.ones((pos.shape[0], 1)))
-
-
-def interppos_trilinear(pos, data, edges):
-    num_pos = pos.shape[0]
-    coords0 = np.stack([np.searchsorted(edges[i], pos[:, i], sorter=None) - 1 for i in range(3)], axis=-1)
-
-    coords, dists, iw = np.zeros((num_pos, 8, 3), dtype=int), np.zeros((num_pos, 3, 2)), np.zeros((num_pos, 8))
-    dists[:, :, 1] = np.stack([pos[:, i] - edges[i][coords0[:, i]] for i in range(3)], axis=-1)
-    dists[:, :, 0] = np.stack([edges[i][coords0[:, i] + 1] - pos[:, i] for i in range(3)], axis=-1)
-
-    idata = np.stack(data, axis=0)
-    res = np.zeros((len(data), num_pos))
-
-    norms = np.prod(dists[:, :, 0] + dists[:, :, 1], axis=1)
-    for i, idx in enumerate(product([0, 1], repeat=3)):
-        for j in range(3):
-            coords[:, i, j] = coords0[:, j] + idx[j]
-        iw[:, i] = dists[:, 0, idx[0]] * dists[:, 1, idx[1]] * dists[:, 2, idx[2]]
-        res += iw[:, i] * idata[:, coords[:, i, 0], coords[:, i, 1], coords[:, i, 2]]
-    res /= norms[np.newaxis, :]
-    return *[res[i, :] for i in range(len(data))], (coords, iw / norms[:, np.newaxis])
-
-
-def interppos_1D_linear(pos, data, edges):
-    num_pos = len(pos)
-    coords, iw, res = np.empty((num_pos, 2), dtype=int), np.zeros((num_pos, 2)), np.zeros((len(data), num_pos))
-    coords[:, 1] = np.searchsorted(edges, pos, sorter=None)
-    coords[:, 0] = coords[:, 1] - 1
-    iw[:, 1] = pos - edges[coords[:, 0]]
-    iw[:, 0] = edges[coords[:, 1]] - pos
-
-    for j, dat in enumerate(data):
-        res[j, :] += iw[:, 0] * data[j][coords[:, 0]] + iw[:, 1] * data[j][coords[:, 1]]
-    dists = edges[coords[:, 1]] - edges[coords[:, 0]]
-    res /= dists[np.newaxis, :]
-    return *[res[i, :] for i in range(len(data))], (coords, iw / dists[:, np.newaxis])
-
-
-def calc_los_image(image, common_args):
-    # tic = time.time()
-    columns, rows, ecef_to_local, timescale, top_alt, stepsize = common_args
-    rot_sat_channel = R.from_quat(image['qprime'])  # Rotation between satellite pointing and channel pointing
-    q = image['afsAttitudeState']  # Satellite pointing in ECI
-    rot_sat_eci = R.from_quat(np.roll(q, -1))  # Rotation matrix for q (should go straight to ecef?)
-
-    current_ts = timescale.from_datetime(image["EXPDate"])
-    localR = np.linalg.norm(sfapi.wgs84.latlon(image["TPlat"], image["TPlon"], elevation_m=0).at(current_ts).position.m)
-    eci_to_ecef = R.from_matrix(itrs.rotation_at(current_ts))
-    satpos_eci = image['afsGnssStateJ2000'][0:3]
-    satpos_ecef = eci_to_ecef.apply(satpos_eci)
-    los = []
-    for column in columns:
-        los_col = []
-        for row in rows:
-            los_ecef = get_los_ecef(image, column, row, rot_sat_channel, rot_sat_eci, eci_to_ecef)
-            posecef_i_sph, weights = get_steps_in_local_grid(image, dict_of(columns, rows, ecef_to_local, timescale,
-                                                                            top_alt, stepsize),
-                                                             satpos_ecef, los_ecef, localR=localR, do_abs=False)
-            los_col.append(posecef_i_sph)
-        los.append(los_col.copy())
-    # toc = time.time()
-    # logging.log(15, f"LOS calculated for image {image['num_image']} in {toc - tic:.3f} s.")
-    return los
-
-
-def test_grid(jb, processes):
-    logging.info("Calculating LOS...")
-    _ = multiprocess(calc_los_image, jb["data"], jb["image_vars"], processes,
-                     [jb["columns"], jb["rows"], jb["ecef_to_local"], jb["timescale"], jb["top_alt"], jb["stepsize"]])
-    logging.info("Geometry successfully verified!")
-
-
-def calc_obs(geo, main_data, conf, processes):
-    data = geo["data"].copy()
-    data.update(main_data)
-    obs = multiprocess(calc_obs_image, data, geo["image_vars"] + ["IR1c", "IR2c"],
-                       processes, [geo["columns"], geo["rows"]], unzip=True)
-    res = {"y": np.stack(obs[:2], axis=0), "tan_alts": obs[2]}
-    size = res["y"].flatten().shape[0]
-    res["Se_inv"] = sp.diags(np.ones((size)), 0).astype('float32') / (conf.RAD_SCALE ** 2 * len(res["y"]))
-    return res
-
-
-def calc_obs_image(image, common_args):
-    tic = time.time()
-    columns, rows = common_args
-    image_profiles = [[], []]
-    image_tanalts = []
-    for column in columns:
-        s_profiles, s_tanalt = prepare_profiles(image, ("IR1c", "IR2c"), column, rows)
-        for i in range(2):
-            image_profiles[i].append(s_profiles[i])
-        image_tanalts.append(s_tanalt)
-    toc = time.time()
-    logging.log(15, f"Observations processed for image {image['num_image']} in {toc - tic:.3f} s.")
-    return image_profiles[0], image_profiles[1], image_tanalts
-
-
-def calc_K(jb, rt_data, o2, atm, xsc, valid_obs, processes, fx_only=False, debug_nan=False):
-    multi_start = time.time()
-    pname = "Forward model" if fx_only else "Jacobian"
-    res = multiprocess(calc_K_image, jb["data"], jb["image_vars"], processes,
-                       [jb["edges"], jb["is_regular_grid"], jb["columns"], jb["rows"], jb["ecef_to_local"],
-                        jb["rad_grid"], jb["alongtrack_grid"], jb["acrosstrack_grid"], jb["stepsize"], jb["top_alt"],
-                        jb["excludeK"], jb['timescale'], xsc, o2, atm, rt_data, valid_obs, fx_only], unzip=False)
-
-    stack_start = time.time()
-    K, im_fx = res.pop(0)
-    fxl = [[im_fx[0]], [im_fx[1]]]
-    while len(res) > 0:
-        im_K, im_fx = res.pop(0)
-        if not fx_only:
-            K = K + im_K
-        for i in range(len(fxl)):
-            fxl[i].append(im_fx[i])
-    del im_K
-    sort_start = time.time()
-    logging.log(15, f"{pname}: Stacking took {sort_start - stack_start:.1f} s")
-    if not fx_only:
-        K.sort_indices()
-    logging.log(15, f"{pname}: Sorting took {time.time() - sort_start:.1f} s")
-
-    fx = np.stack([np.array(list(chain.from_iterable(lis))) for lis in fxl], axis=0)
-    calc_end = time.time()
-    logging.log(15, f"{pname}: Jacobian calculated in  {calc_end - multi_start:.1f} s")
-
-    if np.isnan(fx).any():
-        if debug_nan:
-            logging.warn(f"{pname}: Nan's encountered in fx!")
-            if not fx_only:
-                for i in np.argwhere(np.isnan(fx)):
-                    csr_clear_row(K, i)
+        interp_type = conf.INTERPOLATOR
+        ndims = len(grid.edges)
+        if interp_type == 'LINEAR':
+            if ndims == 1:
+                self.interp = interpolator.Linear_interpolator_1D(grid)
+            elif ndims == 3:
+                self.interp = interpolator.Trilinear_interpolator_3D(grid)
+            else:
+                raise NotImplementedError(f"LINEAR interolator for {ndims} dimensions not implemented!")
         else:
-            raise RuntimeError(f"{pname}: Nan's encountered in fx! Abort!")
-    if not fx_only:
-        assert not np.isnan(K.max()), f"{pname}: Nan's in Jacobian! Abort!"
-        logging.log(15, f"Jacobian: Jacobian checked for Nan's  {time.time() - calc_end:.1f} s")
+            raise NotImplementedError(f"Unknown interpolator type {interp_type}!")
 
-    return None if fx_only else K, fx
+        self.channels = conf.CHANNELS
+        self.valid_points = np.logical_and(self.grid.alt > conf.RET_ALT_RANGE[0] * 1e3,
+                                           self.grid.alt < conf.RET_ALT_RANGE[1] * 1e3)
+        self.valid_obs = np.logical_and(self.grid.TP_heights > conf.TP_ALT_RANGE[0] * 1e3,
+                                        self.grid.TP_heights < conf.TP_ALT_RANGE[1] * 1e3)
+        assert self.valid_obs.any(), "All observations flagged as invalid, hence forward model has nothing to do!"
+        self.fx_image_shape = (len(self.channels), len(self.grid.columns), len(self.grid.rows))
+        self.K_image_shape = (len(self.channels) * len(self.grid.columns) * len(self.grid.rows),
+                              len(self.grid.ret_qty) * self.grid.npoints)
+        self.fwdm_vars = const.NEEDED_DATA
+        self.debug_nan = debug_nan  # Not implemented yet!
+
+        self.stepsize = grid.stepsize
+
+    @abstractmethod
+    def _fwdm_los(self, pos, atm):
+        pass
+
+    @abstractmethod
+    def _fwdm_jac_los(self, pos, atm):
+        pass
+
+    def _calc_fwdm_jac_image(self, image, atm):
+        tic = time.time()
+        im_los = self.grid.calc_los_image(image)
+        fx_im = np.zeros(self.fx_image_shape)
+        valid_obs_image = self.valid_obs[image['num_image'], ...]
+        if self.combine_images:
+            jac = sp.lil_array((self.K_image_shape[0] * image["num_images"], self.K_image_shape[1]))
+            im_atm = atm.copy()
+            jac_row_idx = len(self.channels) * len(self.grid.columns) * image['num_image']
+        else:
+            jac = sp.lil_array(*self.K_image_shape)
+            im_atm = atm[image["num_image"], ...].copy()
+            jac_row_idx = 0
+
+        for idx in np.ndindex(self.fx_image_shape[1:]):
+            if valid_obs_image[idx[0], idx[1]]:
+                fx_im[:, idx[0], idx[1]], grads = self._fwdm_jac_los(im_los[idx[0]][idx[1]], im_atm)
+                grad_stack = np.stack(grads, axis=0).reshape(len(self.grid.ret_qty), len(self.channels), -1)
+                grad_stack[:, :, ~self.valid_points.reshape(-1)] = 0.0
+                for j in range(len(self.channels)):
+                    jac[j * self.grid.npoints + jac_row_idx, :] = grad_stack[:, j, :].reshape(-1)
+            jac_row_idx += 1
+
+        logging.log(15, f"Jacobian: Image {image['num_image']} processed in {time.time()-tic:.1f} s.")
+        return jac, fx_im
+
+    def _calc_fwdm_image(self, image, atm):
+        tic = time.time()
+        logging.info(len(atm))
+        im_los = self.grid.calc_los_image(image)
+        fx_im = np.zeros(self.fx_image_shape)
+        im_atm = atm.copy() if self.combine_images else atm[image["num_image"], ...].copy()
+        for idx in np.ndindex(self.fx_image_shape[1:]):
+            if self.valid_obs[*idx]:
+                fx_im[:, *idx] = self._fwdm_los(im_los[idx[0]][idx[1]], im_atm)
+        logging.log(15, f"Forward model: Image {image['num_image']} processed in {time.time()-tic:.1f} s.")
+        return fx_im
+
+    def calc_fwdm(self, atm, processes=1):
+        fx = multiprocess(self._calc_fwdm_image, self.metadata, self.fwdm_vars, processes, atm, stack=True)
+        if np.isnan(fx).any():
+            raise RuntimeError("Forward model: Nan's encountered in fx! Abort!")
+        return fx
+
+    def calc_fwdm_jac(self, atm, processes=1):
+        res = multiprocess(self._calc_fwdm_jac_image, self.metadata, self.fwdm_vars, processes, atm,
+                           unzip=not self.combine_images)
+
+        stack_start = time.time()
+        if self.combine_images:
+            jac, fx = res.pop(0)
+            fx = fx[:, np.newaxis, :, :]
+            while len(res) > 0:
+                im_jac, im_fx = res.pop(0)
+                jac = jac + im_jac
+                fx = np.concatenate([fx, im_fx[:, np.newaxis, :, :]], axis=1)
+            del im_jac, im_fx
+        else:
+            jac, fx = res
+            del res
+
+        check_start = time.time()
+        logging.log(15, f"Jacobian: Stacking took {check_start - stack_start:.1f} s")
+
+        if np.isnan(fx).any():
+            raise RuntimeError("Forward model: Nan's encountered in fx! Abort!")
+        if np.isnan(jac.max()):
+            raise RuntimeError("Jacobian: Nan's encountered in jacobian! Abort!")
+        return jac, fx
 
 
-def calc_K_image(image, common_args):
-    edges, is_regular_grid, columns, rows, ecef_to_local, rad_grid, alongtrack_grid, acrosstrack_grid, stepsize, \
-        top_alt, excludeK, timescale, xsc, o2, atm, rt_data, valid_obs, fx_only = common_args
+class Forward_model_temp_abs(Forward_model):
+    def __init__(self, conf, const, grid, metadata, o2, rt_data, combine_images=False):
+        super().__init__(conf, const, grid, metadata, [o2], combine_images=combine_images)
+        self.ver_idx = self.grid.ret_qty.index("VER")
+        self.t_idx = self.grid.ret_qty.index("T")
+        self.o2_idx = 0
+        self.rt_data = rt_data
+        self.startT = np.linspace(100, 600, 501)
+        self.Tstep = self.startT[1] - self.startT[0]
 
-    image_calc_profiles = [[], []]
-    valid_obs_im = valid_obs[image["num_image"], :, :]
-    numpixels = len(rows) * len(columns) * image["num_images"]
-    gridsize = (len(rad_grid) - 1) * (len(alongtrack_grid) - 1) * (len(acrosstrack_grid) - 1)
-    image["los"] = calc_los_image(image, (columns, rows, ecef_to_local, timescale, top_alt, stepsize))
+    def _interp_T(self, vals, tables):
+        ix = np.array(np.floor((vals - self.startT[0]) / self.Tstep), dtype=int)
+        w0 = (self.startT[ix + 1] - vals) / self.Tstep
+        w1 = (vals - self.startT[ix]) / self.Tstep
+        return [w0 * tab[ix, :].T + w1 * tab[ix + 1, :].T for tab in tables]
 
-    if fx_only:
-        pname = "Forward model"
-    else:
-        pname = "Jacobian"
-        image_K = sp.lil_array((2 * numpixels, 2 * gridsize))
+    def _fwdm_jac_los(self, pos, atm):
+        pathVER, pathT, patho2, pWeights = self.interp.interpolate(pos, [atm[self.ver_idx], atm[self.t_idx],
+                                                                         self.aux[self.o2_idx]])
+        sigmas, sigmas_pTgrad, emissions, emissions_pTgrad = self._interp_T(pathT, [self.rt_data[name] for name in
+                                                             ["sigma", "sigma_grad", "emission", "emission_grad"]])
+        exp_tau = np.exp(-(sigmas * patho2).cumsum(axis=1) * self.stepsize * 1e2) * (self.stepsize / 4 / np.pi * 1e6)
+        del sigmas
+        grad_Temps = self.interp.grad_path2grid(self.rt_data["filters"] @
+                                                (exp_tau * emissions_pTgrad) * pathVER, pWeights)
+        del emissions_pTgrad
+        path_tau_em = exp_tau * emissions
+        grad_Temps -= self.interp.grad_path2grid(self.rt_data["filters"] @ (np.flip(np.cumsum(np.flip(path_tau_em *
+            pathVER, axis=1), axis=1), axis=1) * sigmas_pTgrad) * patho2, pWeights)
+        del sigmas_pTgrad, patho2
+        path_tau_em = self.rt_data["filters"] @ path_tau_em
+        res = np.sum(path_tau_em * pathVER, axis=1)
+        grad_VER = self.interp.grad_path2grid(path_tau_em, pWeights)
+        return res, [grad_VER, grad_Temps]
 
-    image_k_row = len(rows) * len(columns) * image["num_image"]
-    tic = time.time()
-    for i, column in enumerate(columns):
-        for j, row in enumerate(rows):
-            if valid_obs_im[i, j]:
-                if fx_only:
-                    ircalc = calc_rad_ng(image["los"][i][j], stepsize, o2, atm, rt_data, edges)
-                else:
-                    ircalc, VERgrad, TEMPgrad = calc_rad2(image["los"][i][j], stepsize, o2, atm, rt_data, edges)
-                    if excludeK is not None:
-                        VERgrad[:, excludeK] = 0.0
-                        TEMPgrad[:, excludeK] = 0.0
-                    for ch in range(2):
-                        k_row_c = np.hstack([VERgrad[ch, ...].reshape(-1), TEMPgrad[ch, ...].reshape(-1)])
-                        image_K[image_k_row + ch * numpixels, :] = k_row_c.reshape(-1)
-            else:
-                ircalc = [0.0, 0.0]
-            image_k_row += 1
-            for ch in range(2):
-                image_calc_profiles[ch].append(ircalc[ch])
-        if i == 0:
-            toc = time.time()
-            logging.log(15, f"{pname}: Started image {image['num_image']}, ETA {(toc - tic) * len(columns):.3f} s.")
-
-    if not fx_only:
-        image_K = image_K.tocsr()
-        image_K = image_K.multiply(xsc[np.newaxis, :])
-    toc = time.time()
-    logging.log(15, f"{pname}: Image {image['num_image']} processed in {toc-tic:.1f} s.")
-    return None if fx_only else image_K, image_calc_profiles
-
-
-def calc_K_image_1D(image, common_args):
-    edges, is_regular_grid, columns, rows, ecef_to_local, rad_grid, stepsize, top_alt, excludeK, timescale, xsc, o2, \
-        atm, rt_data, valid_obs = common_args
-
-    nimg = image["num_image"]
-    image_calc_profiles = []
-    valid_obs_im = valid_obs[image["num_image"], :, :]
-    image["los"] = calc_los_image(image, (columns, rows, ecef_to_local, timescale, top_alt, stepsize))
-    mean_along = np.array([np.array([image["los"][i][j][:, 2].mean() for j in range(len(rows))]).mean()
-                           for i in range(len(columns))]).mean()
-
-    image_k_row = 0
-    image_K = sp.lil_array((len(rows) * len(columns), (len(rad_grid) - 1) * len(columns)))
-    # breakpoint()
-    tic = time.time()
-    for i, column in enumerate(columns):
-        for j, row in enumerate(rows):
-            if valid_obs_im[i, j]:
-                ircalc, VERgrad = calc_rad_1DVER(image["los"][i][j][:, 0], stepsize, o2[nimg, :],
-                                                 [atm[0][nimg, :], atm[1][nimg, :]], rt_data, edges)
-                if excludeK is not None:
-                    VERgrad[excludeK[nimg, :]] = 0.0
-                image_K[image_k_row, :] = VERgrad
-            else:
-                ircalc = 0.0
-            image_k_row += 1
-            image_calc_profiles.append(ircalc)
-    image_K = image_K.tocsr()
-    image_K *= xsc
-    toc = time.time()
-    logging.log(15, f"Jacobian: Image {image['num_image']} processed in {toc-tic:.1f} s.")
-    return image_K, image_calc_profiles, mean_along
+    def _fwdm_los(self, pos, atm):
+        pathVER, pathT, patho2, _ = self.interp.interpolate(pos, [atm[self.ver_idx], atm[self.t_idx],
+                                                                  self.aux[self.o2_idx]])
+        sigmas, emissions = self._interp_T(pathT, [self.rt_data[name] for name in ["sigma", "emission"]])
+        exp_tau = np.exp(-(sigmas * patho2).cumsum(axis=1) * self.stepsize * 1e2) * (self.stepsize / 4 / np.pi * 1e6)
+        del sigmas
+        path_tau_em = self.rt_data["filters"] @ (exp_tau * emissions)
+        return np.sum(path_tau_em * pathVER, axis=1)

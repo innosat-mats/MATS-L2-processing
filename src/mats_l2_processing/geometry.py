@@ -45,10 +45,6 @@ def cart2sph(pos):
     return radius, longitude, latitude
 
 
-def center_grid(grid):
-    return (grid[:-1] + grid[1:]) / 2
-
-
 def get_alt_lat_lon(radius_grid, acrosstrack_grid, alongtrack_grid, ecef_to_local):
     rr, acrr, alongg = np.meshgrid(radius_grid, acrosstrack_grid, alongtrack_grid, indexing="ij")
     lxx, lyy, lzz = sph2cart(rr, acrr, alongg)
@@ -77,24 +73,7 @@ def make_grid_proto(proto, offset=0.0, scaling=1.0):
     return res * scaling + offset
 
 
-def generate_grid(data, grid_def, grid_proto=None):
-    # columns, rows, ecef_to_local, top_alt, stepsize, timescale
-    lims = grid_limits(data, grid_def)
-    # print(lims)
-    if grid_proto is None:
-        grid_proto = [lims[i][2] for i in range(3)]
-    result = []
-    for i in range(3):
-        if (type(grid_proto[i]) is int) or (type(grid_proto[i]) is float):
-            grid_len = int(grid_proto[i])
-            assert grid_len > 0, "Malformed grid_spec parameter!"
-            result.append(np.linspace(lims[i][0], lims[i][1], grid_len))
-        elif isinstance(grid_proto[i], np.ndarray):
-            assert len(grid_proto[i].shape) == 1
-            result.append(grid_proto[i][np.logical_and(grid_proto[i] > lims[i][0], grid_proto[i] < lims[i][1])])
-        else:
-            raise ValueError(f"Malformed grid_spec parameter: {type(grid_proto[i])}")
-    return result
+
 
 
 def get_los_ecef(image, icol, irow, rot_sat_channel, rot_sat_eci, eci_to_ecef):
