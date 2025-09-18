@@ -1,323 +1,216 @@
-# %%
+from abc import ABC, abstractmethod
 import numpy as np
-import pandas as pd
-from mats_utils.geolocation.coordinates import col_heights, findheight
-from mats_l1_processing.pointing import pix_deg
-from scipy.spatial.transform import Rotation as R
-from scipy.interpolate import CubicSpline, interp1d
 import scipy.sparse as sp
-from skyfield import api as sfapi
-from skyfield.framelib import itrs
-import pickle
-from mats_l2_processing.grids import cart2sph
-from fast_histogram import histogramdd
-from bisect import bisect_left
-import boost_histogram as bh
 import time
+import logging
 
-# %%
-
-def load_abstable():
-    global abstable_tan_height
-    global abstable_distance
-    abstable_tan_height, abstable_distance=np.load("/home/olemar/Projects/Universitetet/MATS/MATS-L2-processing/data/splinedlogfactorsIR2.npy",allow_pickle=True)
-    return
-# %%
-def generate_timescale():
-    global timescale 
-    timescale = sfapi.load.timescale()
-    return
-
-def generate_stepsize():
-    global stepsize
-    stepsize = 100
-    return
-
-def generate_top_alt():
-    global top_alt
-    top_alt = 120e3
-    return
-    
-
-# %%
-
-def prepare_profile(ch,col=None,rows=None):
-    """Extract data and tanalt for image
-
-    Detailed description
-
-    Args:
-        single column
-        range of rows
-
-    Returns: 
-        profile, tanalts
-    """
-    image = np.stack(ch.ImageCalibrated)
-    if col is None:
-        col = int(ch['NCOL']/2)
-    if rows.any() == None:
-        rows = np.arrange(0,ch['NROW'])
-
-    cs = col_heights(ch, col, 10, spline=True)
-    tanalt = np.array(cs(rows))
-    profile = np.array(image[rows, col])*1e15
-    return profile,tanalt
-
-def eci_to_ecef_transform(date):
-    return R.from_matrix(itrs.rotation_at(timescale.from_datetime(date)))
-
-def select_data(df, num_profiles, start_index = 0):
-    if num_profiles + start_index > len(df):
-        raise ValueError('Selected profiles out of bounds')
-    df = df.loc[start_index:start_index+num_profiles-1]
-    df = df.reset_index(drop=True)
-
-def find_top_of_atmosphere(top_altitude,localR,satpos,losvec):
-    sat_radial_pos = np.linalg.norm(satpos)
-    los_zenith_angle = np.arccos(np.dot(satpos,losvec)/sat_radial_pos)
-    #solving quadratic equation to find distance start and end of atmosphere 
-    b = 2*sat_radial_pos*np.cos(los_zenith_angle)
-    root=np.sqrt(b**2+4*((top_altitude+localR)**2 - sat_radial_pos**2))
-    distance_top_1 =(-b-root)/2
-    distance_top_2 =(-b+root)/2
-    
-    return [distance_top_1,distance_top_2]
-
-def generate_steps(stepsize,top_altitude,localR,satpos,losvec):
-    distance_top_of_atmosphere = find_top_of_atmosphere(top_altitude,localR,satpos,losvec)
-    steps = np.arange(distance_top_of_atmosphere[0], distance_top_of_atmosphere[1], stepsize)
-    return steps
-
-def generate_local_transform(df):
-    """Calculate the transform from ecef to the local coordinate system.
-
-    Detailed description
-
-    Args:
-        df (pandas dataframe): data.
-
-    Returns: 
-        ecef_to_local
-    """
-    first = 0
-    mid = int((len(df)-1)/2)
-    last = len(df)-1
-
-    
-    eci_to_ecef = eci_to_ecef_transform(df['EXPDate'][mid])
-
-    posecef_first = eci_to_ecef.apply(df.afsTangentPointECI[first]).astype('float32')
-    posecef_mid = eci_to_ecef.apply(df.afsTangentPointECI[mid]).astype('float32')
-    posecef_last = eci_to_ecef.apply(df.afsTangentPointECI[last]).astype('float32')
-    
-    observation_normal = np.cross(posecef_first,posecef_last)
-    observation_normal = observation_normal/np.linalg.norm(observation_normal) #normalize vector
-
-    posecef_mid_unit = posecef_mid/np.linalg.norm(posecef_mid) #unit vector for central position
-    ecef_to_local = R.align_vectors([[1,0,0],[0,1,0]],[posecef_mid_unit,observation_normal])[0]
-
-    return ecef_to_local
-
-def get_los_ecef(image,icol,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef):
-    x, y = pix_deg(image, icol, irow) #Angles for single pixel
-    rotation_channel_pix = R.from_euler('xyz', [0, y, x], degrees=True).apply([1, 0, 0]) #Rot matrix between pixel pointing and channels pointing
-    los_eci = np.array(rot_sat_eci.apply(rot_sat_channel.apply(rotation_channel_pix)))
-    los_ecef = eci_to_ecef.apply(los_eci) 
-    return los_ecef
-
-def get_steps_in_local_grid(image,ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False):
-
-    if localR is None:
-        date = image['EXPDate']
-        current_ts = timescale.from_datetime(date)
-        localR = np.linalg.norm(sfapi.wgs84.latlon(image.TPlat, image.TPlon, elevation_m=0).at(current_ts).position.m)        
-
-    s_steps = generate_steps(stepsize,top_altitude=top_alt,localR=localR,satpos=satpos_ecef,losvec=los_ecef)
-
-    posecef=(np.expand_dims(satpos_ecef, axis=0).T+s_steps*np.expand_dims(los_ecef, axis=0).T).astype('float32')
-    poslocal = ecef_to_local.apply(posecef.T) #convert to local (for middle alongtrack measurement)
-    poslocal_sph = cart2sph(poslocal)   
-    poslocal_sph=np.array(poslocal_sph).T
-    
-    if do_abs:
-        weights = get_weights(poslocal_sph,s_steps,localR)
-    else:
-        weights = np.ones((poslocal_sph.shape[0],1))
-
-    return poslocal_sph,weights
-
-def get_weights(posecef_sph,s_steps,localR):
-    #Calculate the weights 
-    minarg=posecef_sph[:,0].argmin() #find tangent point
-    distances=(s_steps-s_steps[minarg])/1000 #distance to tangent point (km)
-    target_tanalt = (posecef_sph[minarg,0]-localR)/1000 #value of tangent altitude
-    lowertan=bisect_left(abstable_tan_height,target_tanalt)-1 #index in table of value below tangent altitude
-    uppertan=lowertan+1 #index in table of value above tangent altitude
-    absfactor_distance_below=abstable_distance[lowertan](distances) #extract values below
-    absfactor_distance_above=abstable_distance[uppertan](distances) #extract values above
-    #make interpolater that generates optical depth for each distance as a function of tanalt
-    interpolated_abs_factor=interp1d([abstable_tan_height[lowertan],abstable_tan_height[uppertan]],np.array([absfactor_distance_below,absfactor_distance_above]).T)
-    #get transmissivity for generated optical depth vector
-    weights=np.exp(interpolated_abs_factor(target_tanalt))
-
-    return weights
-
-def generate_grid(df, columns, rows, ecef_to_local):
-
-    first = 0
-    mid = int((len(df)-1)/2)
-    last = len(df)-1
-
-    mid_date = df['EXPDate'][mid]
-    current_ts = timescale.from_datetime(mid_date)
-    localR = np.linalg.norm(sfapi.wgs84.latlon(df.TPlat[mid], df.TPlon[mid], elevation_m=0).at(current_ts).position.m)
-
-    rot_sat_channel = R.from_quat(df.loc[mid]['qprime']) #Rotation between satellite pointing and channel pointing
-    
-    q = df.loc[mid]['afsAttitudeState'] #Satellite pointing in ECI
-    rot_sat_eci = R.from_quat(np.roll(q, -1)) #Rotation matrix for q (should go straight to ecef?)
-    
-    eci_to_ecef=R.from_matrix(itrs.rotation_at(current_ts))
-    satpos_eci = df.loc[mid]['afsGnssStateJ2000'][0:3] 
-    satpos_ecef=eci_to_ecef.apply(satpos_eci)
+import mats_l2_processing.interpolator as interpolator
+from mats_l2_processing.util import multiprocess
 
 
-    #change to do only used columns and rows
-    if len(columns)==1:
-        mid_col = columns[0]
-    else:
-        left_col = columns[0]
-        mid_col = int(df["NCOL"][0]/2) -1
-        right_col =df["NCOL"][0] - 1
-    
-    irow = rows[0]
-    poslocal_sph = []       
+class Forward_model(ABC):
+    def __init__(self, conf, const, grid, metadata, aux, combine_images=False, debug_nan=False):
+        self.grid = grid
+        self.metadata = metadata
+        self.combine_images = combine_images
 
-    #Which localR to use in get_step_local_grid?
-    
-    los_ecef = get_los_ecef(df.loc[first],mid_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-    poslocal_sph.append(get_steps_in_local_grid(df.loc[first],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
-    los_ecef = get_los_ecef(df.loc[mid],mid_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-    poslocal_sph.append(get_steps_in_local_grid(df.loc[mid],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
-    los_ecef = get_los_ecef(df.loc[last],mid_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-    poslocal_sph.append(get_steps_in_local_grid(df.loc[last],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
-    
-    
-    if len(columns)>1:
-        los_ecef = get_los_ecef(df.loc[first],left_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-        poslocal_sph.append(get_steps_in_local_grid(df.loc[first],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
-        los_ecef = get_los_ecef(df.loc[mid],left_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-        poslocal_sph.append(get_steps_in_local_grid(df.loc[mid],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
-        los_ecef = get_los_ecef(df.loc[last],left_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-        poslocal_sph.append(get_steps_in_local_grid(df.loc[last],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
+        for i in range(len(aux)):
+            assert aux[i].shape == tuple(grid.atm_shape[1:]), f"Auxiliary data variable {i} " +\
+                "has shape {aux[i].shape}, but grid is of shape {grid.atm_shape[1:]}"
+        self.aux = aux
 
-        los_ecef = get_los_ecef(df.loc[first],right_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-        poslocal_sph.append(get_steps_in_local_grid(df.loc[first],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
-        los_ecef = get_los_ecef(df.loc[mid],right_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-        poslocal_sph.append(get_steps_in_local_grid(df.loc[mid],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
-        los_ecef = get_los_ecef(df.loc[last],right_col,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-        poslocal_sph.append(get_steps_in_local_grid(df.loc[last],ecef_to_local, satpos_ecef, los_ecef, localR=None, do_abs=False)[0])
+        interp_type = conf.INTERPOLATOR
+        ndims = len(grid.edges)
+        if interp_type == 'LINEAR':
+            if ndims == 1:
+                self.interp = interpolator.Linear_interpolator_1D(grid)
+            elif ndims == 3:
+                self.interp = interpolator.Trilinear_interpolator_3D(grid)
+            else:
+                raise NotImplementedError(f"LINEAR interolator for {ndims} dimensions not implemented!")
+        else:
+            raise NotImplementedError(f"Unknown interpolator type {interp_type}!")
 
-    poslocal_sph = np.vstack(poslocal_sph)
-    max_rad = poslocal_sph[:,0].max()
-    min_rad = poslocal_sph[:,0].min()
-    max_along = poslocal_sph[:,2].max()
-    min_along = poslocal_sph[:,2].min()
-    max_across = poslocal_sph[:,1].max()
-    min_across = poslocal_sph[:,1].min()
-    if len(columns) < 2:
-        max_across = max_across + 0.2
-        min_across = min_across - 0.2
+        self.channels = conf.CHANNELS
+        self.valid_points = np.logical_and(self.grid.alt > conf.RET_ALT_RANGE[0] * 1e3,
+                                           self.grid.alt < conf.RET_ALT_RANGE[1] * 1e3)
+        self.valid_obs = np.logical_and(self.grid.TP_heights > conf.TP_ALT_RANGE[0] * 1e3,
+                                        self.grid.TP_heights < conf.TP_ALT_RANGE[1] * 1e3)
+        self.numobs = len(self.valid_obs.flatten())
+        assert self.valid_obs.any(), "All observations flagged as invalid, hence forward model has nothing to do!"
+        self.im_points = len(self.grid.columns) * len(self.grid.rows)
+        self.fx_image_shape = (len(self.channels), len(self.grid.columns), len(self.grid.rows))
+        self.K_image_shape = (len(self.channels) * self.im_points, len(self.grid.ret_qty) * self.grid.npoints)
+        self.fwdm_vars = const.NEEDED_DATA
+        self.debug_nan = debug_nan  # Not implemented yet!
+        self.stepsize = grid.stepsize
 
-    nalt = int(len(rows/2))+2
-    nacross = int(len(columns/2))+2
-    if (nacross-2)<2:
-        nacross=2
-    nalong = int(len(df)/2)+2
-    if (nalong-2)<2:
-        nalong=2
+    @abstractmethod
+    def _fwdm_los(self, pos, atm, aux):
+        pass
 
+    @abstractmethod
+    def _fwdm_jac_los(self, pos, atm, aux):
+        pass
 
-    altitude_grid = np.linspace(min_rad-10e3,localR+top_alt+10e3,nalt)
-    acrosstrack_grid = np.linspace(min_across-0.1,max_across+0.1,nacross)
-    alongtrack_grid = np.linspace(min_along-0.2,max_along+0.2,nalong)
-
-    return altitude_grid,acrosstrack_grid,alongtrack_grid
-
-
-def calc_jacobian(df,columns,rows,edges=None):
-    # -*- coding: utf-8 -*-
-    """Calculate Jacobian.
-
-    Detailed description
-
-    Args:
-        df (pandas dataframe): data.
-        coluns (array): columns to use.
-        rows: rows to use
-
-    Returns:
-        y, 
-        K, 
-        altitude_grid, (change to edges)
-        alongtrack_grid,
-        acrosstrack_grid, 
-        ecef_to_local
-    """
-    profiles = []
-    generate_timescale() #generates a global timescale object
-    generate_stepsize()
-    generate_top_alt()
-    load_abstable()
-    ecef_to_local = generate_local_transform(df)
-    if edges is None:
-        altitude_grid,acrosstrack_grid,alongtrack_grid = generate_grid(df, columns, rows, ecef_to_local)
-        edges = [altitude_grid,acrosstrack_grid,alongtrack_grid]
-
-    #Add check that all images are same format
-    #change to edges
-    K = sp.lil_array((len(rows)*len(columns)*len(df),(len(altitude_grid)-1)*(len(alongtrack_grid)-1)*(len(acrosstrack_grid)-1)))
-    k_row = 0
-    for i in range(len(df)):
-        print("image number: " + str(i))
+    def _calc_fwdm_jac_image(self, image, common_args):
         tic = time.time()
-        rot_sat_channel = R.from_quat(df.loc[i]['qprime']) #Rotation between satellite pointing and channel pointing
-        q = df.loc[i]['afsAttitudeState'] #Satellite pointing in ECI
-        rot_sat_eci = R.from_quat(np.roll(q, -1)) #Rotation matrix for q (should go straight to ecef?) 
+        im_los = self.grid.calc_los_image(image, [])
+        fx_im = np.zeros(self.fx_image_shape)
+        valid_obs_image = self.valid_obs[image['num_image'], ...]
+        if self.combine_images:
+            valid_points_stack = np.concatenate([self.valid_points.flatten() for qty in self.grid.ret_qty])
+            jac = sp.lil_array((self.K_image_shape[0] * image["num_images"], self.K_image_shape[1]))
+            im_atm, im_aux = [item.copy() for item in common_args]
+            jac_row_idx = self.im_points * image['num_image']
+            num_pixels = self.im_points * image['num_images']
+        else:
+            valid_points_stack = np.concatenate([self.valid_points[image["num_image"], :].flatten()
+                                                 for qty in self.grid.ret_qty])
+            jac = sp.lil_array((self.K_image_shape[0], self.K_image_shape[1]))
+            im_atm, im_aux = [[qty[image["num_image"], ...].copy() for qty in dset] for dset in common_args]
+            jac_row_idx, num_pixels = 0, self.im_points
 
-        current_ts = timescale.from_datetime(df['EXPDate'][i])
-        localR = np.linalg.norm(sfapi.wgs84.latlon(df.loc[i].TPlat, df.loc[i].TPlon, elevation_m=0).at(current_ts).position.m)        
-        eci_to_ecef=R.from_matrix(itrs.rotation_at(current_ts))
-        satpos_eci = df.loc[i]['afsGnssStateJ2000'][0:3] 
-        satpos_ecef=eci_to_ecef.apply(satpos_eci)
-        for column in columns:
-            # print("column number: " + str(column))
-            profile,tanalts = prepare_profile(df.iloc[i],column,rows)
-            profiles.append(profile)
-            for irow in rows:
-                los_ecef = get_los_ecef(df.loc[i],column,irow,rot_sat_channel,rot_sat_eci,eci_to_ecef)
-                posecef_i_sph,weights = get_steps_in_local_grid(df.loc[i],ecef_to_local,satpos_ecef,los_ecef,localR, do_abs=True)
-                # tic = time.time()
-                hist = histogramdd(posecef_i_sph[::1,:],range=[[edges[0][0],edges[0][-1]],[edges[1][0],edges[1][-1]],
-                    [edges[2][0],edges[2][-1]]], bins=[len(edges[0])-1,len(edges[1])-1,len(edges[2])-1],weights=weights)
-                # toc = time.time()
-                # print(toc-tic)
-                # hist = histogramdd(posecef_i_sph[::1,:],range=[[edges[0][0],edges[0][-1]],[edges[1][0],edges[1][-1]],
-                #     [edges[2][0],edges[2][-1]]], bins=[len(edges[0])-1,len(edges[1])-1,len(edges[2])-1])
-                # tic = time.time()
-                # print(tic-toc)
-                # hist = bh.numpy.histogramdd(posecef_i_sph[::1,:],range=[[edges[0][0],edges[0][-1]],[edges[1][0],edges[1][-1]],
-                #     [edges[2][0],edges[2][-1]]], bins=[len(edges[0])-1,len(edges[1])-1,len(edges[2])-1])[0]
+        for idx in np.ndindex(self.fx_image_shape[1:]):
+            if valid_obs_image[idx[0], idx[1]]:
+                fx_im[:, idx[0], idx[1]], grads = self._fwdm_jac_los(im_los[idx[0]][idx[1]], im_atm, im_aux)
+                grads = [grads[i] * scale for i, scale in enumerate(self.grid.scales)]
+                grad_stack = np.stack(grads, axis=0).reshape(len(self.grid.ret_qty), len(self.channels), -1)
+                # grad_stack[:, :, ~self.valid_points.reshape(-1)] = 0.0
+                for j in range(len(self.channels)):
+                    jac[j * num_pixels + jac_row_idx, :] = np.where(valid_points_stack, grad_stack[:, j, :].flatten(),
+                                                                    0.0)
+                #for j in range(2):
+                #    print([jac[j * num_pixels + jac_row_idx, f] for f, b in enumerate(valid_points_stack) if b])
+                #    print([jac[j * num_pixels + jac_row_idx, f] for f, b in enumerate(~valid_points_stack) if b])
+                #breakpoint()
 
-                k = hist.reshape(-1)
-                K[k_row,:] = k
-                k_row = k_row+1
+            jac_row_idx += 1
 
-        toc = time.time()
-        print(toc-tic)
+        # scale_vec = np.concatenate([sc * np.ones(self.grid.atm_size) for sc in self.grid.scales])
+        # logging.info("{scale_vec.shape}, {jac.shape}")
+        # jac = jac.multiply(scale_vec[np.newaxis, :])
+        # print(type(jac))
+        logging.log(15, f"Jacobian: Image {image['num_image']} processed in {time.time()-tic:.1f} s.")
+        return jac.tocsr(), fx_im
 
-    y = np.array(profiles)
- 
-    return  y, K, altitude_grid, alongtrack_grid,acrosstrack_grid, ecef_to_local
-# %%
+    def _calc_fwdm_image(self, image, common_args):
+        tic = time.time()
+        im_los = self.grid.calc_los_image(image, [])
+        fx_im = np.zeros(self.fx_image_shape)
+        if self.combine_images:
+            im_atm, im_aux = [item.copy() for item in common_args]
+        else:
+            im_atm, im_aux = [[qty[image["num_image"], ...].copy() for qty in dset] for dset in common_args]
+        for idx in np.ndindex(self.fx_image_shape[1:]):
+            if self.valid_obs[image["num_image"], idx[0], idx[1]]:
+                fx_im[:, *idx] = self._fwdm_los(im_los[idx[0]][idx[1]], im_atm, im_aux)
+        logging.log(15, f"Forward model: Image {image['num_image']} processed in {time.time()-tic:.1f} s.")
+        return fx_im
+
+    def calc_fwdm(self, atm, processes=1):
+        fx = multiprocess(self._calc_fwdm_image, self.metadata, self.fwdm_vars, processes, [atm, self.aux], stack=True)
+        fx = np.transpose(fx, axes=(1, 0, 2, 3))
+        if np.isnan(fx).any():
+            raise RuntimeError("Forward model: Nan's encountered in fx! Abort!")
+        return fx
+
+    def calc_fwdm_jac(self, atm, processes=1):
+        res = multiprocess(self._calc_fwdm_jac_image, self.metadata, self.fwdm_vars, processes, [atm, self.aux],
+                           unzip=False)
+
+        stack_start = time.time()
+        if self.combine_images:
+            jac, fx = res.pop(0)
+            fx = fx[:, np.newaxis, :, :]
+            while len(res) > 0:
+                im_jac, im_fx = res.pop(0)
+                jac = jac + im_jac
+                fx = np.concatenate([fx, im_fx[:, np.newaxis, :, :]], axis=1)
+        else:
+            jac, fx = [], []
+            while len(res) > 0:
+                im_jac, im_fx = res.pop(0)
+                jac.append(im_jac)
+                fx.append(im_fx)
+        del im_jac, im_fx
+
+        check_start = time.time()
+        logging.log(15, f"Jacobian: Stacking took {check_start - stack_start:.1f} s")
+        if np.isnan(fx).any():
+            raise RuntimeError("Forward model: Nan's encountered in fx! Abort!")
+        # if np.isnan(jac.max()):  TODO: find an effcient implementation for this!
+        #     raise RuntimeError("Jacobian: Nan's encountered in jacobian! Abort!")
+        return jac, fx
+
+    def prepare_obs(self, conf, data, var):
+        obs = np.empty((len(self.channels), len(self.grid.img_time), len(self.grid.columns), len(self.grid.rows)))
+        idxs = np.meshgrid(self.grid.rows, self.grid.columns, indexing='ij')
+        for i, chn in enumerate(self.channels):
+            obs[i, ...] = conf.NCDF_OBS_FACTOR * np.transpose(data[var[chn]][:, idxs[0], idxs[1]], axes=(0, 2, 1))
+        return obs
+
+    def _get_qty_id(self, qty):
+        if qty in self.grid.ret_qty:
+            return (0, self.grid.ret_qty.index(qty))
+        if qty in self.grid.aux_qty:
+            return (1, self.grid.aux_qty.index(qty))
+        else:
+            raise ValueError("Forward model needs the quantity {qty}, but it is neither retrieved nor auxiliary!")
+
+
+class Forward_model_temp_abs(Forward_model):
+    def __init__(self, conf, const, grid, metadata, aux, rt_data, combine_images=False):
+        super().__init__(conf, const, grid, metadata, aux, combine_images=combine_images)
+        # self.ver_idx = self.grid.ret_qty.index("VER")
+        # self.t_idx = self.grid.ret_qty.index("T")
+        self.ver_id, self.t_id, self.o2_id = [self._get_qty_id(qty) for qty in ["VER", "T", "O2"]]
+        if self.o2_id[0] == 0:
+            raise ValueError("This forward model cannot retrieve O2 density, check your conf!")
+        self.rt_data = rt_data
+        self.startT = np.linspace(100, 600, 501)
+        self.Tstep = self.startT[1] - self.startT[0]
+
+    def _interp_T(self, vals, tables):
+        ix = np.array(np.floor((vals - self.startT[0]) / self.Tstep), dtype=int)
+        w0 = (self.startT[ix + 1] - vals) / self.Tstep
+        w1 = (vals - self.startT[ix]) / self.Tstep
+        return [w0 * tab[ix, :].T + w1 * tab[ix + 1, :].T for tab in tables]
+
+    def _fwdm_jac_los(self, pos, atm, aux):
+        # pathVER, pathT, patho2, pWeights = self.interp.interpolate(pos, [atm[self.ver_idx], atm[self.t_idx],
+        #                                                                 self.aux[self.o2_idx]])
+        grads = [None for x in self.grid.ret_qty]
+        pathVER, pathT, patho2, pWeights = self.interp.interpolate(pos, [[atm, aux][idx[0]][idx[1]] for idx in
+                                                                         [self.ver_id, self.t_id, self.o2_id]])
+        sigmas, sigmas_pTgrad, emissions, emissions_pTgrad = self._interp_T(pathT, [self.rt_data[name] for name in
+                                                             ["sigma", "sigma_grad", "emission", "emission_grad"]])
+        exp_tau = np.exp(-(sigmas * patho2).cumsum(axis=1) * self.stepsize * 1e2) * (self.stepsize / 4 / np.pi * 1e6)
+        del sigmas
+
+        if not self.t_id[0]:  # if retrieving temperature
+            grads[self.t_id[1]] = self.interp.grad_path2grid(self.rt_data["filters"] @
+                                                             (exp_tau * emissions_pTgrad) * pathVER, pWeights)
+        del emissions_pTgrad
+        path_tau_em = exp_tau * emissions
+        if not self.t_id[0]:  # if retrieving temperature
+            grads[self.t_id[1]] -= self.interp.grad_path2grid(self.rt_data["filters"] @
+                (np.flip(np.cumsum(np.flip(path_tau_em * pathVER, axis=1), axis=1), axis=1) * sigmas_pTgrad) *
+                patho2, pWeights)
+        del sigmas_pTgrad, patho2
+        path_tau_em = self.rt_data["filters"] @ path_tau_em
+        res = np.sum(path_tau_em * pathVER, axis=1)
+        if not self.ver_id[0]:  # if retrieving VER
+            grads[self.ver_id[1]] = self.interp.grad_path2grid(path_tau_em, pWeights)
+        return res, grads
+
+    def _fwdm_los(self, pos, atm, aux):
+        # pathVER, pathT, patho2, _ = self.interp.interpolate(pos, [atm[self.ver_idx], atm[self.t_idx],
+        #                                                          self.aux[self.o2_idx]])
+        pathVER, pathT, patho2, pWeights = self.interp.interpolate(pos, [[atm, aux][idx[0]][idx[1]] for idx in
+                                                                         [self.ver_id, self.t_id, self.o2_id]])
+        sigmas, emissions = self._interp_T(pathT, [self.rt_data[name] for name in ["sigma", "emission"]])
+        exp_tau = np.exp(-(sigmas * patho2).cumsum(axis=1) * self.stepsize * 1e2) * (self.stepsize / 4 / np.pi * 1e6)
+        del sigmas
+        path_tau_em = self.rt_data["filters"] @ (exp_tau * emissions)
+        return np.sum(path_tau_em * pathVER, axis=1)
