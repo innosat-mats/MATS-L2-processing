@@ -82,7 +82,7 @@ def tikhonov_laplacian_op(grids, volume_factors, aspect_ratio=None):
 
 
 def Sa_inv_tikhonov(grid, weight_0, diff_weights=[0.0, 0.0, 0.0], laplacian_weight=0.0,
-                    volume_factors=False, store_terms=False, aspect_ratio=False):
+                    volume_factors=False, store_terms=False, aspect_ratio=1):
     """
     Creates Sa_inv for Tikhonov regularisation on general rectilinear grid.
     In n dimentions (i.e. len(grid) == n):
@@ -144,7 +144,7 @@ def Sa_inv_tikhonov(grid, weight_0, diff_weights=[0.0, 0.0, 0.0], laplacian_weig
     return Sa_inv, terms
 
 
-def Sa_inv_multivariate(grid, weights, volume_factors=False, store_terms=False, aspect_ratio=False):
+def Sa_inv_multivariate(grid, weights, volume_factors=False, store_terms=False, aspect_ratio=False, var_scales=None):
     """
     Builds Sa_inv for retrievals with two variables on the same grid.
 
@@ -161,13 +161,22 @@ def Sa_inv_multivariate(grid, weights, volume_factors=False, store_terms=False, 
     terms - The different terms that are added to construct Sa_inv stored separately. "None" if store_terms is False.
     """
 
-    assert len(weights) > 1
-    assert all([len(w) == 5 for w in weights])
-    Sas = [Sa_inv_tikhonov(grid, w[0], diff_weights=w[1:4], laplacian_weight=w[4], volume_factors=volume_factors,
-                           store_terms=store_terms, aspect_ratio=aspect_ratio) for w in weights]
+    # assert len(weights) > 1
+    ndims = len(grid)
+    assert all([len(w) == ndims + 2 for w in weights])
+
+    if var_scales is None:
+        scaled_weights = weights
+    else:
+        assert len(var_scales) == len(weights)
+        scaled_weights = [np.sqrt(s) * np.array(weights[i]) for i, s in enumerate(var_scales)]
+
+    Sas = [Sa_inv_tikhonov(grid, w[0], diff_weights=w[1:(ndims + 1)], laplacian_weight=w[ndims + 1],
+                           volume_factors=volume_factors, store_terms=store_terms, aspect_ratio=aspect_ratio)
+           for w in scaled_weights]
 
     if store_terms:
         terms = {name: sp.block_diag([Sas[j][1][name] for j in range(len(Sas))]) for name in Sas[0][1].keys()}
     else:
         terms = None
-    return sp.block_diag([x[0] for x in Sas]), terms
+    return sp.block_diag([x[0] for x in Sas]).tocsr(), terms

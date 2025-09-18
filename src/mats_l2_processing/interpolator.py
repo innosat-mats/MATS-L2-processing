@@ -6,11 +6,17 @@ from itertools import product
 class Interpolator(ABC):
     def __init__(self, grid):
         self.edges = grid.edges
-        self.shape = grid.atm_shape[1:]
+        self.shape = [len(c) for c in grid.centers]
+        # self.shape = grid.atm_shape[1:]
 
     @abstractmethod
     def interpolate(self, pos, data):
         pass
+
+
+class Trilinear_interpolator_3D(Interpolator):
+    def __init__(self, grid):
+        super().__init__(grid)
 
     def grad_path2grid(self, pathGrad, pWeights):
         res = np.zeros((pathGrad.shape[0], *self.shape))
@@ -19,11 +25,6 @@ class Interpolator(ABC):
             coord = pWeights[0][it.multi_index[0], it.multi_index[1], :]
             res[:, *coord] += w * pathGrad[:, it.multi_index[0]]
         return res
-
-
-class Trilinear_interpolator_3D(Interpolator):
-    def __init__(self, grid):
-        super().__init__(grid)
 
     def interpolate(self, pos, data):
         num_pos = pos.shape[0]
@@ -50,16 +51,24 @@ class Linear_interpolator_1D(Interpolator):
     def __init__(self, grid):
         super().__init__(grid)
 
+    def grad_path2grid(self, pathGrad, pWeights):
+        res = np.zeros((pathGrad.shape[0], *self.shape))
+        it = np.nditer(pWeights[1], flags=["multi_index"])
+        for w in it:
+            coord = pWeights[0][it.multi_index[0], it.multi_index[1]]
+            res[:, coord] += w * pathGrad[:, it.multi_index[0]]
+        return res
+
     def interpolate(self, pos, data):
         num_pos = len(pos)
         coords, iw, res = np.empty((num_pos, 2), dtype=int), np.zeros((num_pos, 2)), np.zeros((len(data), num_pos))
-        coords[:, 1] = np.searchsorted(self.edges, pos, sorter=None)
+        coords[:, 1] = np.searchsorted(self.edges[0], pos, sorter=None)
         coords[:, 0] = coords[:, 1] - 1
-        iw[:, 1] = pos - self.edges[coords[:, 0]]
-        iw[:, 0] = self.edges[coords[:, 1]] - pos
+        iw[:, 1] = pos - self.edges[0][coords[:, 0]]
+        iw[:, 0] = self.edges[0][coords[:, 1]] - pos
 
         for j, dat in enumerate(data):
             res[j, :] += iw[:, 0] * data[j][coords[:, 0]] + iw[:, 1] * data[j][coords[:, 1]]
-        dists = self.edges[coords[:, 1]] - self.edges[coords[:, 0]]
+        dists = self.edges[0][coords[:, 1]] - self.edges[0][coords[:, 0]]
         res /= dists[np.newaxis, :]
         return *[res[i, :] for i in range(len(data))], (coords, iw / dists[:, np.newaxis])
