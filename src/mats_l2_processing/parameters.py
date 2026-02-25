@@ -58,7 +58,7 @@ def make_conf(conf_type, conf_file, args):
     req["post"] = ["GRIDDED_POST", "GRID_TYPE"]
 
     # Configuration for TP height calculation
-    req["heights"] = ["DISTORTION_CORRECTION", "DISTORTION_DATA"]
+    req["heights"] = ["DISTORTION_CORRECTION", "DISTORTION_DATA", "PLANET_FILE"]
     const["heights"] = {"POINTING_DATA": ATT_VARS + CCD_VARS, "ncpar": ncpar}
     # const["heights"]["POINTING_DATA"].remove("CCDSEL")
     # const["heights"]["POINTING_DATA"].remove("EXPDate")
