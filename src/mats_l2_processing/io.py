@@ -99,10 +99,16 @@ def write_gen_ncdf(fname, dim_spec, var_spec, attributes):
             nf.setncatts(attributes)
 
 
-def append_gen_ncdf(fname, var_spec, attributes={}):
+def append_gen_ncdf(fname, var_spec, attributes={}, overwrite=False):
     with nc.Dataset(fname, 'r+') as nf:
         for var, spec in var_spec.items():
-            ncvar = nf.createVariable(var, 'f8', spec[3])
+            if var in nf.variables:
+                if overwrite:
+                    ncvar = nf[var]
+                else:
+                    raise RuntimeError(f"Variable {var} already exists!")
+            else:
+                ncvar = nf.createVariable(var, 'f8', spec[3])
             ncvar.long_name = spec[0]
             if spec[1] is not None:
                 ncvar.units = spec[1]

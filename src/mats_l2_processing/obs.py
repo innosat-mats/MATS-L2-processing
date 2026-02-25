@@ -167,6 +167,15 @@ def remove_background_ds(ir1, ir2, ir3, ir4, ch_widths, rayleigh_scales, recal=N
     return ir1c * ch_widths[0], ir2c * ch_widths[1]
 
 
+def remove_background_1ch(ag, bg, ch_width, rayleigh_scales, recal=None):
+    print(ch_width, rayleigh_scales
+    agc, bgc = ag.copy(), bg.copy()
+    if recal is not None:
+        agc, bgc = [recal[i] * arr for i, arr in enumerate([agc, bgc])]
+    agc -= bgc * rayleigh_scales[0] / rayleigh_scales[1]
+    return agc * ch_width
+
+
 def remove_background(ir1, ir2, ir3, ir4, recal=None):
     ir1c, ir2c = ir1.copy(), ir2.copy()
     if recal is not None:

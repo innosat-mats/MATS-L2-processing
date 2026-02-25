@@ -1,12 +1,14 @@
 import numpy as np
 from mats_l2_processing.io import read_ncdf
+from mats_l2_processing.util import ecef2wgs84, seconds2DT
+
 from scipy.interpolate import RegularGridInterpolator, CubicSpline, bisplev
 from scipy.optimize import minimize_scalar
-from skyfield.api import load
+from skyfield.api import load, wgs84
 from scipy.spatial.transform import Rotation as R
-from skyfield.api import wgs84
 from skyfield.units import Distance
 from skyfield.positionlib import ICRF
+from skyfield.framelib import itrs
 
 
 class Pointing():
@@ -67,17 +69,60 @@ def sparse_tp_data(image, deg_map, nx=5, ny=10):
     return xpixels, ypixels, TPheights, TPpos
 
 
-def faster_heights(image, pointing, ny=10, cols=None, rows=None):
+def faster_heights(image, pointing, ny=5, cols=None, rows=None):
     fullxgrid = np.arange(image['NCOL'] + 1) if cols is None else cols
     fullygrid = np.arange(image['NROW']) if rows is None else rows
-    if len(cols) > 1:
-        nx = np.minimum(5, int(np.floor((image['NCOL'] + 1) / 5)))
+    if cols is not None and len(cols) > 1:
+        nx = np.minimum(5, int(np.floor((image['NCOL'] + 1) / 4)))
     else:
         nx = int(np.floor(image['NCOL'] / 2))
-    xpixels, ypixels, TPheights, _ = sparse_tp_data(image, pointing.get_deg_map(image), nx=nx, ny=ny)
+    xpixels, ypixels, TPheights, TPpos = sparse_tp_data(image, pointing.get_deg_map(image), nx=nx, ny=ny)
     interpolator = RegularGridInterpolator((xpixels, ypixels), TPheights, method='cubic')
     XX, YY = np.meshgrid(fullxgrid, fullygrid, sparse=True)
     return interpolator((XX, YY))
+
+
+def TP_data(image, pointing, var, ny=10, cols=None, rows=None, planets_file=None):
+    assert len(var) > 0
+    can_be_calculated = ["height", "lat", "lon", "sza"]
+    if not set(var).issubset(can_be_calculated):
+        raise RuntimeError(f"Only the following variables can be calculated: {can_be_calculated}")
+
+    if cols is None or len(cols) > 1:
+        nx = np.minimum(5, int(np.floor((image['NCOL'] + 1) / 9)))
+    else:
+        nx = int(np.floor(image['NCOL'] / 2))
+    xpixels, ypixels, TPheights, TPpos = sparse_tp_data(image, pointing.get_deg_map(image), nx=nx, ny=ny)
+
+    fullxgrid = np.arange(image['NCOL'] + 1) if cols is None else cols
+    fullygrid = np.arange(image['NROW']) if rows is None else rows
+    print(nx, ny, TPheights.shape)
+    XX, YY = np.meshgrid(fullxgrid, fullygrid, sparse=True)
+
+    on_ref_grid = {"height": TPheights}
+
+    if len(set(var) & set(["lon", "lat", "sza"])) > 0:
+        timescale = load.timescale()
+        t = timescale.from_datetime(image["EXPDate"])
+        # dt = seconds2DT(image["EXPDate"])
+        eci2ecef = R.from_matrix(itrs.rotation_at(t))
+        TPwgs = [x.reshape(TPheights.shape) for x in ecef2wgs84(eci2ecef.apply(TPpos.reshape(-1, 3)))]
+        on_ref_grid["lat"], on_ref_grid["lon"] = [np.rad2deg(TPwgs[i]) for i in range(2)]
+
+        if "sza" in var:
+            if planets_file is None:
+                raise RuntimeError("Planetary data needed for solar zenith angle calculation!")
+            planets = load(planets_file)
+            out = np.zeros_like(on_ref_grid["height"], dtype=float)
+            with np.nditer([on_ref_grid[x] for x in ["height", "lat", "lon"]] + [out], [],
+                           [['readonly'], ['readonly'], ['readonly'], ['writeonly', 'allocate']]) as it:
+                for height, lat, lon, sza in it:
+                    tpPos = planets['earth'] + wgs84.latlon(lat, lon, elevation_m=height)
+                    sza[...] = 90.0 - tpPos.at(t).observe(planets['sun']).apparent().altaz()[0].degrees
+                on_ref_grid["sza"] = it.operands[3]
+            planets.close()
+
+    return {v: RegularGridInterpolator((xpixels, ypixels), on_ref_grid[v], method='cubic')((XX, YY)) for v in var}
 
 
 def col_heights(image, x, pointing, ypixels=None, spline=False, splineTPpos=False):
