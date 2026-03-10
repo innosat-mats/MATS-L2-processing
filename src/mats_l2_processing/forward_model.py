@@ -6,13 +6,18 @@ import logging
 
 import mats_l2_processing.interpolator as interpolator
 from mats_l2_processing.util import multiprocess
+from mats_l2_processing.numerical_methods import valid_coo_row, coo_add
 
 
 class Forward_model(ABC):
-    def __init__(self, conf, const, grid, metadata, aux, combine_images=False, debug_nan=False):
+    def __init__(self, conf, const, grid, obs, aux, combine_images=False, debug_nan=False):
         self.grid = grid
-        self.metadata = metadata
+        self.obs = obs
         self.combine_images = combine_images
+        self.sep_chn_los = conf.SEP_CHN_LOS
+
+        self.channels = obs.channels
+        self.num_channels = len(obs.channels)
 
         for i in range(len(aux)):
             assert aux[i].shape == tuple(grid.atm_shape[1:]), f"Auxiliary data variable {i} " +\
@@ -31,16 +36,16 @@ class Forward_model(ABC):
         else:
             raise NotImplementedError(f"Unknown interpolator type {interp_type}!")
 
-        self.channels = conf.CHANNELS
         self.valid_points = np.logical_and(self.grid.alt > conf.RET_ALT_RANGE[0] * 1e3,
                                            self.grid.alt < conf.RET_ALT_RANGE[1] * 1e3)
-        self.valid_obs = np.logical_and(self.grid.TP_heights > conf.TP_ALT_RANGE[0] * 1e3,
-                                        self.grid.TP_heights < conf.TP_ALT_RANGE[1] * 1e3)
-        self.numobs = len(self.valid_obs.flatten())
-        assert self.valid_obs.any(), "All observations flagged as invalid, hence forward model has nothing to do!"
-        self.im_points = len(self.grid.columns) * len(self.grid.rows)
-        self.fx_image_shape = (len(self.channels), len(self.grid.columns), len(self.grid.rows))
-        self.K_image_shape = (len(self.channels) * self.im_points, len(self.grid.ret_qty) * self.grid.npoints)
+        # Obs self.valid_obs = np.logical_and(self.grid.TP_heights > conf.TP_ALT_RANGE[0] * 1e3,
+        #                                     self.grid.TP_heights < conf.TP_ALT_RANGE[1] * 1e3)
+        self.numobs = len(self.obs.valid_obs.flatten())
+        # Obs assert self.valid_obs.any(), "All observations flagged as invalid, hence forward model has nothing to do!"
+        self.num_simages = obs.num_simages
+        self.im_points = len(obs.columns) * len(obs.rows)
+        self.fx_image_shape = (self.num_channels, len(obs.columns), len(obs.rows))
+        self.K_image_shape = (self.num_channels * self.im_points, len(self.grid.ret_qty) * self.grid.npoints)
         self.fwdm_vars = const.NEEDED_DATA
         self.debug_nan = debug_nan  # Not implemented yet!
         self.stepsize = grid.stepsize
@@ -53,71 +58,110 @@ class Forward_model(ABC):
     def _fwdm_jac_los(self, pos, atm, aux):
         pass
 
-    def _calc_fwdm_jac_image(self, image, common_args):
+    def _calc_fwdm_jac_image(self, num_simage, common_args):
+        rt_time, los_time, st_time, fl_time, wh_time = 0.0, 0.0, 0.0, 0.0, 0.0
         tic = time.time()
-        im_los = self.grid.calc_los_image(image, [])
+        # im_los = self.obs.calc_los_image(num_simage, [])
         fx_im = np.zeros(self.fx_image_shape)
-        valid_obs_image = self.valid_obs[image['num_image'], ...]
+        valid_obs_image = self.obs.valid_obs[:, num_simage, ...]
         if self.combine_images:
-            valid_points_stack = np.concatenate([self.valid_points.flatten() for qty in self.grid.ret_qty])
-            jac = sp.lil_array((self.K_image_shape[0] * image["num_images"], self.K_image_shape[1]))
+            # valid_points_stack = np.concatenate([self.valid_points.flatten() for qty in self.grid.ret_qty])
+            valid_points_flat = self.valid_points.flatten()
+            # simage_rows = self.im_points * len(self.channels)
+            # jac_ini = sp.coo_matrix((self.im_points * num_simage, self.K_image_shape[1]), dtype=np.float32)
+            # jac = sp.lil_array((self.K_image_shape[0] * self.num_simages, self.K_image_shape[1]))
+            empty_row, before, after = [sp.coo_matrix((nr, self.K_image_shape[1]), dtype=np.float64) if nr > 0 else None
+                for nr in [1, num_simage * self.im_points, (self.num_simages - 1 - num_simage) * self.im_points]]
+            jac_row_list = []
             im_atm, im_aux = [item.copy() for item in common_args]
-            jac_row_idx = self.im_points * image['num_image']
-            num_pixels = self.im_points * image['num_images']
+            # jac_row_idx = self.im_points * num_simage
+            num_pixels = self.im_points * self.num_simages
         else:
-            valid_points_stack = np.concatenate([self.valid_points[image["num_image"], :].flatten()
+            valid_points_stack = np.concatenate([self.valid_points[num_simage, :].flatten()
                                                  for qty in self.grid.ret_qty])
             jac = sp.lil_array((self.K_image_shape[0], self.K_image_shape[1]))
-            im_atm, im_aux = [[qty[image["num_image"], ...].copy() for qty in dset] for dset in common_args]
+            im_atm, im_aux = [[qty[num_simage, ...].copy() for qty in dset] for dset in common_args]
             jac_row_idx, num_pixels = 0, self.im_points
 
-        for idx in np.ndindex(self.fx_image_shape[1:]):
-            if valid_obs_image[idx[0], idx[1]]:
-                fx_im[:, idx[0], idx[1]], grads = self._fwdm_jac_los(im_los[idx[0]][idx[1]], im_atm, im_aux)
-                grads = [grads[i] * scale for i, scale in enumerate(self.grid.scales)]
-                grad_stack = np.stack(grads, axis=0).reshape(len(self.grid.ret_qty), len(self.channels), -1)
-                # grad_stack[:, :, ~self.valid_points.reshape(-1)] = 0.0
-                for j in range(len(self.channels)):
-                    jac[j * num_pixels + jac_row_idx, :] = np.where(valid_points_stack, grad_stack[:, j, :].flatten(),
-                                                                    0.0)
-                #for j in range(2):
-                #    print([jac[j * num_pixels + jac_row_idx, f] for f, b in enumerate(valid_points_stack) if b])
-                #    print([jac[j * num_pixels + jac_row_idx, f] for f, b in enumerate(~valid_points_stack) if b])
-                #breakpoint()
+        if self.sep_chn_los:
+            for j in range(self.num_channels):
+                tic_los = time.time()
+                im_los = self.obs.calc_los_image(num_simage, j)
+                los_time += time.time() - tic_los
+                if before is not None:
+                    jac_row_list.append(before)
+                for idx in np.ndindex(self.fx_image_shape[1:]):
+                    if valid_obs_image[j, idx[0], idx[1]]:
+                        tic_rt = time.time()
+                        fx_los, grads = self._fwdm_jac_los(im_los[idx[0]][idx[1]], im_atm, im_aux)
+                        rt_time += time.time() - tic_rt
+                        fx_im[j, idx[0], idx[1]] = fx_los[j]
+                        # grads = [grads[i] * scale for i, scale in enumerate(self.grid.scales)]
+                        # grad_stack = np.stack(grads, axis=0).reshape(len(self.grid.ret_qty), self.num_channels, -1)
+                        tic_wh = time.time()
+                        grads = [valid_coo_row(grads[i][j], valid_points_flat).multiply(scale)
+                                 for i, scale in enumerate(self.grid.scales)]
+                        # #grads = [sp.coo_matrix(np.where(valid_points_flat, grads[i][j, ...].flatten() * scale, 0.0))
+                        # #        for i, scale in enumerate(self.grid.scales)]
+                        # jac_list.append(sp.coo_matrix(np.where(valid_points_stack, grad_stack[:, j, :].flatten(), 0.0)))
+                        jac_row_list.append(sp.hstack(grads))
+                        wh_time += time.time() - tic_wh
+                    else:
+                        jac_row_list.append(empty_row)
+                    # jac_row_idx += 1
+                tic_st = time.time()
+                if after is not None:
+                    jac_row_list.append(after)
+            jac = sp.vstack(jac_row_list)
+            st_time += time.time() - tic_st
 
-            jac_row_idx += 1
-
-        # scale_vec = np.concatenate([sc * np.ones(self.grid.atm_size) for sc in self.grid.scales])
-        # logging.info("{scale_vec.shape}, {jac.shape}")
-        # jac = jac.multiply(scale_vec[np.newaxis, :])
-        # print(type(jac))
-        logging.log(15, f"Jacobian: Image {image['num_image']} processed in {time.time()-tic:.1f} s.")
+        else:
+            im_los = self.obs.calc_los_image(num_simage, 0)
+            for idx in np.ndindex(self.fx_image_shape[1:]):
+                if valid_obs_image[0, idx[0], idx[1]]:
+                    fx_im[:, idx[0], idx[1]], grads = self._fwdm_jac_los(im_los[idx[0]][idx[1]], im_atm, im_aux)
+                    grads = [grads[i] * scale for i, scale in enumerate(self.grid.scales)]
+                    grad_stack = np.stack(grads, axis=0).reshape(len(self.grid.ret_qty), self.num_channels, -1)
+                    for j in range(self.num_channels):
+                        jac[j * num_pixels + jac_row_idx, :] = np.where(valid_points_stack,
+                                                                        grad_stack[:, j, :].flatten(), 0.0)
+                jac_row_idx += 1
+        logging.log(15, f"Jacobian: Image {num_simage} processed in {time.time()-tic:.1f} s" +
+                    f"(LOS:{los_time:.1f}, RT:{rt_time:.1f}, ST:{st_time:.1f}), WH:{wh_time:.1f})")
         return jac.tocsr(), fx_im
 
-    def _calc_fwdm_image(self, image, common_args):
+    def _calc_fwdm_image(self, num_simage, common_args):
         tic = time.time()
-        im_los = self.grid.calc_los_image(image, [])
+        # im_los = self.grid.calc_los_image(num_simage, [])
         fx_im = np.zeros(self.fx_image_shape)
         if self.combine_images:
             im_atm, im_aux = [item.copy() for item in common_args]
         else:
-            im_atm, im_aux = [[qty[image["num_image"], ...].copy() for qty in dset] for dset in common_args]
-        for idx in np.ndindex(self.fx_image_shape[1:]):
-            if self.valid_obs[image["num_image"], idx[0], idx[1]]:
-                fx_im[:, *idx] = self._fwdm_los(im_los[idx[0]][idx[1]], im_atm, im_aux)
-        logging.log(15, f"Forward model: Image {image['num_image']} processed in {time.time()-tic:.1f} s.")
+            im_atm, im_aux = [[qty[num_simage, ...].copy() for qty in dset] for dset in common_args]
+        chn_range = list(range(self.num_channels)) if self.sep_chn_los else [0]
+        for j in chn_range:
+            im_los = self.obs.calc_los_image(num_simage, j)
+            for idx in np.ndindex(self.fx_image_shape[1:]):
+                if self.obs.valid_obs[j, num_simage, idx[0], idx[1]]:
+                    fxres = self._fwdm_los(im_los[idx[0]][idx[1]], im_atm, im_aux)
+                    if self.sep_chn_los:
+                        fx_im[j, *idx] = fxres[j]
+                    else:
+                        fx_im[:, *idx] = fxres
+        logging.log(15, f"Forward model: Image {num_simage} processed in {time.time()-tic:.1f} s.")
         return fx_im
 
     def calc_fwdm(self, atm, processes=1):
-        fx = multiprocess(self._calc_fwdm_image, self.metadata, self.fwdm_vars, processes, [atm, self.aux], stack=True)
+        fx = multiprocess(self._calc_fwdm_image, self.num_simages, [], processes, [atm, self.aux],
+                          stack=True, numbers_only=True)
         fx = np.transpose(fx, axes=(1, 0, 2, 3))
         if np.isnan(fx).any():
             raise RuntimeError("Forward model: Nan's encountered in fx! Abort!")
         return fx
 
     def calc_fwdm_jac(self, atm, processes=1):
-        res = multiprocess(self._calc_fwdm_jac_image, self.metadata, self.fwdm_vars, processes, [atm, self.aux],
-                           unzip=False)
+        res = multiprocess(self._calc_fwdm_jac_image, self.num_simages, [], processes, [atm, self.aux],
+                           unzip=False, numbers_only=True)
 
         stack_start = time.time()
         if self.combine_images:
@@ -143,12 +187,12 @@ class Forward_model(ABC):
         #     raise RuntimeError("Jacobian: Nan's encountered in jacobian! Abort!")
         return jac, fx
 
-    def prepare_obs(self, conf, data, var):
-        obs = np.empty((len(self.channels), len(self.grid.img_time), len(self.grid.columns), len(self.grid.rows)))
-        idxs = np.meshgrid(self.grid.rows, self.grid.columns, indexing='ij')
-        for i, chn in enumerate(self.channels):
-            obs[i, ...] = conf.NCDF_OBS_FACTOR * np.transpose(data[var[chn]][:, idxs[0], idxs[1]], axes=(0, 2, 1))
-        return obs
+    # Obs def prepare_obs(self, conf, data, var):
+    #    obs = np.empty((len(self.channels), len(self.grid.img_time), len(self.grid.columns), len(self.grid.rows)))
+    #    idxs = np.meshgrid(self.grid.rows, self.grid.columns, indexing='ij')
+    #    for i, chn in enumerate(self.channels):
+    #        obs[i, ...] = conf.NCDF_OBS_FACTOR * np.transpose(data[var[chn]][:, idxs[0], idxs[1]], axes=(0, 2, 1))
+    #    return obs
 
     def _get_qty_id(self, qty):
         if qty in self.grid.ret_qty:
@@ -194,14 +238,22 @@ class Forward_model_temp_abs(Forward_model):
         del emissions_pTgrad
         path_tau_em = exp_tau * emissions
         if not self.t_id[0]:  # if retrieving temperature
-            grads[self.t_id[1]] -= self.interp.grad_path2grid(self.rt_data["filters"] @
+            #grads[self.t_id[1]] -= self.interp.grad_path2grid(self.rt_data["filters"] @
+            #    (np.flip(np.cumsum(np.flip(path_tau_em * pathVER, axis=1), axis=1), axis=1) * sigmas_pTgrad) *
+            #    patho2, pWeights)
+            grads[self.t_id[1]] = coo_add(grads[self.t_id[1]],
+                self.interp.grad_path2grid(self.rt_data["filters"] @
                 (np.flip(np.cumsum(np.flip(path_tau_em * pathVER, axis=1), axis=1), axis=1) * sigmas_pTgrad) *
-                patho2, pWeights)
+                patho2, pWeights), m2_factor=-1)
         del sigmas_pTgrad, patho2
         path_tau_em = self.rt_data["filters"] @ path_tau_em
         res = np.sum(path_tau_em * pathVER, axis=1)
         if not self.ver_id[0]:  # if retrieving VER
             grads[self.ver_id[1]] = self.interp.grad_path2grid(path_tau_em, pWeights)
+        if type(grads[0]) is not np.ndarray:
+            for g in range(len(grads)):
+                for h in range(len(grads[g])):
+                    grads[g][h].sum_duplicates()
         return res, grads
 
     def _fwdm_los(self, pos, atm, aux):

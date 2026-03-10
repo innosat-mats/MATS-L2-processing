@@ -28,9 +28,9 @@ def make_conf(conf_type, conf_file, args):
     # Configuration for temperature iterative solver
     const["iter_T"] = {"NEEDED_DATA": CCD_VARS + ATT_VARS + TP_VARS, "TP_VARS": CCD_VARS + ATT_VARS, "ncpar": ncpar,
                        "POINTING_DATA": ATT_VARS + CCD_VARS}
-    req["iter_T"] = GEN_RET_VARS + LM_VARS + ['ALT_GRID', 'ALONG_GRID', 'ACROSS_GRID', "ASPECT_RATIO",
-                                              "DISTORTION_CORRECTION", "DISTORTION_DATA", "GEOLOCATE_1D_FROM_TP"] + \
-        APR_1D_VARS
+    req["iter_T"] = ['ALT_GRID', 'ALONG_GRID', 'ACROSS_GRID', "ASPECT_RATIO", "SEP_CHN_LOS", "OBS_SRC_VAR",
+                     "DISTORTION_CORRECTION", "DISTORTION_DATA", "GEOLOCATE_1D_FROM_TP"] + \
+        APR_1D_VARS + GEN_RET_VARS + LM_VARS
 
     # Configuration for linear
     const["linear_1D"] = const["iter_T"].copy()
@@ -92,7 +92,8 @@ def make_conf(conf_type, conf_file, args):
                 "MEDCOLS_1D_APR": 5,
                 "INTERPOLATOR": "LINEAR",
                 "NCDF_OBS_FACTOR": 1e13,
-                "GEOLOCATE_1D_FROM_TP": True}
+                "GEOLOCATE_1D_FROM_TP": True,
+                "SEP_CHN_LOS": False}
 
     if conf_file is not None:
         exec(open(conf_file).read())

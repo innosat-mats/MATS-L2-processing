@@ -5,6 +5,8 @@ from mats_l2_processing.pointing import Pointing, faster_heights
 from mats_l2_processing.util import get_image, center_grid, cart2sph, sph2cart, \
     geoid_radius, multiprocess, make_grid_proto, grid_from_proto
 from mats_l2_processing.io import write_gen_ncdf, append_gen_ncdf
+from mats_l2_processing.obs import get_row_col
+
 from scipy.spatial.transform import Rotation as R
 from scipy.interpolate import interpn
 from skyfield import api as sfapi
@@ -14,16 +16,20 @@ import logging
 
 
 class Grid(ABC):
-    def __init__(self, metadata, conf, const, processes):
+    def __init__(self, all_metadata, conf, const, processes):
+        metadata = all_metadata[0]
+
         # Main grid attributes
         self.edges = None
-        self.columns = None
-        self.rows = None
+        self.rows, self.columns = get_row_col(conf, metadata)
+
+        # Obs self.columns = None
+        # Obs self.rows = None
         # self.ecef_to_local = None
         self.stepsize = conf.STEP_SIZE
         self.top_alt = conf.TOP_ALT
         self.timescale = sfapi.load.timescale()
-        self.pointing = Pointing(metadata, conf, const)
+        self.pointing = Pointing(all_metadata, conf, const)
 
         # Constants
         self.ref_alt = 80e3
@@ -35,9 +41,9 @@ class Grid(ABC):
         self.bounds = conf.BOUNDS
 
         # Set geometric parameters of observations
-        self.TP_heights_vars = const.TP_VARS
+        # Obs self.TP_heights_vars = const.TP_VARS
         self.img_time = metadata["EXPDate_s"]
-        self.valid_time = np.mean(self.img_time)
+        self.valid_time = np.mean(metadata["EXPDate_s"])
 
         self.ncpar = const.ncpar
 
@@ -57,7 +63,7 @@ class Grid(ABC):
             self.all_points = self.npoints * len(self.img_time)
 
         self.lims = self._calc_lims()
-        self.TP_heights = self._calc_tp_heights(metadata, processes)
+        # Obs self.TP_heights = self._calc_tp_heights(metadata, processes)
 
         self.is_regular_grid = True
         for axis_edges in self.edges:
@@ -123,9 +129,9 @@ class Grid(ABC):
     def write_atm_ncdf(self, fname, atm, atm_suffix="", atm_suffix_long=""):
         pass
 
-    @abstractmethod
-    def write_obs_ncdf(self, fname, obs, channels, obs_suffix="", obs_suffix_long=""):
-        pass
+    # Obs @abstractmethod
+    #     def write_obs_ncdf(self, fname, obs, channels, obs_suffix="", obs_suffix_long=""):
+    #     pass
 
     def verify(self, metadata, processes=1):
         _ = multiprocess(self.calc_los_image, metadata, self.fwdm_vars, processes, [])
@@ -160,17 +166,17 @@ class Grid(ABC):
         res = np.minimum(res, self.lims[1, :])
         return res
 
-    def _calc_tp_heights_image(self, image, common_args):
-        # res = np.empty((len(self.columns), len(self.rows)))
-        # for c, col in enumerate(self.columns):
-        #     cs = col_heights(image, col, 10, spline=True)
-        #     res[c, :] = np.array(cs(self.rows))
-        #heights = faster_heights(image, self.pointing)
-        #breakpoint()
-        return faster_heights(image, self.pointing, cols=self.columns, rows=self.rows).T
+    # Obs def _calc_tp_heights_image(self, image, common_args):
+    #    # res = np.empty((len(self.columns), len(self.rows)))
+    #    # for c, col in enumerate(self.columns):
+    #    #     cs = col_heights(image, col, 10, spline=True)
+    #    #     res[c, :] = np.array(cs(self.rows))
+    #    #heights = faster_heights(image, self.pointing)
+    #    #breakpoint()
+    #    return faster_heights(image, self.pointing, cols=self.columns, rows=self.rows).T
 
-    def _calc_tp_heights(self, metadata, processes):
-        return multiprocess(self._calc_tp_heights_image, metadata, self.TP_heights_vars, processes, [], stack=True)
+    # Obs  def _calc_tp_heights(self, metadata, processes):
+    #     return multiprocess(self._calc_tp_heights_image, metadata, self.TP_heights_vars, processes, [], stack=True)
 
     @staticmethod
     def generate_local_transform(data, timescale):
@@ -381,13 +387,13 @@ class Rad_along_3D_grid(Grid):
                                             dims)
         append_gen_ncdf(fname, ncvars)
 
-    def write_obs_ncdf(self, fname, obs, channels, obs_suffix="", obs_suffix_long="", attributes={}):
-        ncvars = {}
-        dims = ("img_time", "img_col", "img_row")
-        for i, chn in enumerate(channels):
-            ncvars[f"{chn}{obs_suffix}"] = (f"{self.ncpar[chn][0]}{obs_suffix_long}", self.ncpar[chn][1],
-                                            obs[i, :, :, :], dims)
-        append_gen_ncdf(fname, ncvars, attributes=attributes)
+    # Obs def write_obs_ncdf(self, fname, obs, channels, obs_suffix="", obs_suffix_long="", attributes={}):
+    #    ncvars = {}
+    #    dims = ("img_time", "img_col", "img_row")
+    #    for i, chn in enumerate(channels):
+    #        ncvars[f"{chn}{obs_suffix}"] = (f"{self.ncpar[chn][0]}{obs_suffix_long}", self.ncpar[chn][1],
+    #                                        obs[i, :, :, :], dims)
+    #    append_gen_ncdf(fname, ncvars, attributes=attributes)
 
     def interpolate_from_3D(self, ext_coords, ext_data):
         # Prepare coordinates

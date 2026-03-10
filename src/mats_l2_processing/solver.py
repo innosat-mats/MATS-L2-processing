@@ -11,11 +11,11 @@ import mats_l2_processing.numerical_methods as num
 
 
 class Solver(ABC):
-    def __init__(self, fwdm, obs, conf, Sa_inv, Se_inv, atm_apr, Sa_terms):
+    def __init__(self, fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, Sa_terms):
         self.fwdm = fwdm
         # tph = fwdm.grid.TP_heights
-        self.y = obs.flatten()
-        self.y_ar = np.where(fwdm.valid_obs[np.newaxis, ...], obs, 0.0).flatten()
+        self.y = obs_data.flatten()
+        self.y_ar = np.where(fwdm.obs.valid_obs, obs_data, 0.0).flatten()
         self.Sa_inv = Sa_inv
         self.Se_inv = Se_inv
         self.xa = self.fwdm.grid.atm2vec(atm_apr)
@@ -29,8 +29,9 @@ class Solver(ABC):
         assert y.shape == fx.shape
         yr = y - fx
         y_se = yr.T @ self.Se_inv
+        numobs_chn = self.fwdm.num_simages * len(self.fwdm.obs.columns) * len(self.fwdm.obs.rows)
         for i, chn in enumerate(self.fwdm.channels):
-            id0, id1 = i * self.fwdm.numobs, (i + 1) * self.fwdm.numobs
+            id0, id1 = i * numobs_chn, (i + 1) * numobs_chn
             logging.info(f"Contributions: {chn} {np.dot(y_se[id0:id1], yr[id0:id1]):.2e}")
 
         assert x.shape == xa.shape
@@ -45,14 +46,14 @@ class Solver(ABC):
 
 
 class Linear_solver(Solver):
-    def __init__(self, fwdm, obs, conf, Sa_inv, Se_inv, atm_apr, fname=None, Sa_terms=None, atm_init=None):
-        super().__init__(fwdm, obs, conf, Sa_inv, Se_inv, atm_apr, Sa_terms)
+    def __init__(self, fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, fname=None, Sa_terms=None, atm_init=None):
+        super().__init__(fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, Sa_terms)
         self.prefix = fname
         self.atm_init = atm_init
         self.fname = f"{fname}_L2_lin.nc"
         self.conf = conf
-        req_obs_shape = (len(fwdm.channels), len(fwdm.grid.img_time), len(fwdm.grid.columns), len(fwdm.grid.rows))
-        assert obs.shape == req_obs_shape, f"obs must be of shape {req_obs_shape}, but got {obs.shape}!"
+        req_obs_shape = (len(fwdm.channels), len(fwdm.grid.img_time), len(fwdm.obs.columns), len(fwdm.obs.rows))
+        assert obs_data.shape == req_obs_shape, f"obs must be of shape {req_obs_shape}, but got {obs_data.shape}!"
         self.obs_shape = req_obs_shape
 
     def solve(self, nproc, jac=None, fx=None):
@@ -72,11 +73,11 @@ class Linear_solver(Solver):
                 fx_f = fx.reshape(self.obs_shape)
             else:
                 fx_f = np.concatenate([fx_im[:, np.newaxis, :, :] for fx_im in fx], axis=1)
-            self.fwdm.grid.write_obs_ncdf(self.fname, fx_f, self.fwdm.channels, obs_suffix="_sim_apr",
-                                          obs_suffix_long="forward model simulation from a priori")
+            self.fwdm.obs.write_obs_ncdf(self.fname, fx_f, obs_suffix="_sim_apr",
+                                         obs_suffix_long="forward model simulation from a priori")
             del fx_f
-            self.fwdm.grid.write_obs_ncdf(self.fname, self.y.reshape(self.obs_shape), self.fwdm.channels,
-                                          obs_suffix_long=", MATS observation")
+            self.fwdm.obs.write_obs_ncdf(self.fname, self.y.reshape(self.obs_shape),
+                                         obs_suffix_long=", MATS observation")
 
         xpr = np.zeros_like(self.xa) if self.atm_init is None else self.fwdm.grid.atm2vec(atm_init) - self.xa
         if self.fwdm.grid.combine_images:
@@ -106,9 +107,9 @@ class Linear_solver(Solver):
 
 
 class Lavenberg_marquardt_solver(Solver):
-    def __init__(self, fwdm, obs, conf, Sa_inv, Se_inv, atm_apr, fname,
+    def __init__(self, fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, fname,
                  save_jac=False, load_jac=False, Sa_terms=None, init_ncdf=False):
-        super().__init__(fwdm, obs, conf, Sa_inv, Se_inv, atm_apr, Sa_terms)
+        super().__init__(fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, Sa_terms)
         self.prefix = fname
         self.save_jac = save_jac
         self.load_jac = load_jac
@@ -118,7 +119,7 @@ class Lavenberg_marquardt_solver(Solver):
 
         self.fname = f"{fname}_L2.nc"
         req_obs_shape = (len(fwdm.channels), len(fwdm.grid.img_time), len(fwdm.grid.columns), len(fwdm.grid.rows))
-        assert obs.shape == req_obs_shape, f"obs must be of shape {req_obs_shape}, but got {obs.shape}!"
+        assert obs_data.shape == req_obs_shape, f"obs must be of shape {req_obs_shape}, but got {obs_data.shape}!"
 
     def _L2_write_init(self, fx):
         atts = {"ret_min_height": self.conf.RET_ALT_RANGE[0] * 1e3,
@@ -129,10 +130,10 @@ class Lavenberg_marquardt_solver(Solver):
             self.fwdm.grid.write_grid_ncdf(self.fname, atts)
             self.fwdm.grid.write_atm_ncdf(self.fname, self.atm_apr, atm_suffix="_apr", atm_suffix_long=", a priori")
             atts = {}
-        self.fwdm.grid.write_obs_ncdf(self.fname, self.y.reshape(fx.shape), self.fwdm.channels,
-                                      obs_suffix_long=", MATS observation")
-        self.fwdm.grid.write_obs_ncdf(self.fname, fx, self.fwdm.channels, obs_suffix="_sim_apr", attributes=atts,
-                                      obs_suffix_long="forward model simulation based on a priori")
+        self.fwdm.obs.write_obs_ncdf(self.fname, self.y.reshape(fx.shape),
+                                     obs_suffix_long=", MATS observation")
+        self.fwdm.obs.write_obs_ncdf(self.fname, fx, obs_suffix="_sim_apr", attributes=atts,
+                                     obs_suffix_long="forward model simulation based on a priori")
 
     def _L2_write_iter(self, atm, fx, it_id):
         # it_id is iteration number if positive, -1 if final value
@@ -145,8 +146,8 @@ class Lavenberg_marquardt_solver(Solver):
 
         self.fwdm.grid.write_atm_ncdf(self.fname, atm, atm_suffix=suffix, atm_suffix_long=long_suffix)
         logging.log(15, f"fx shape: {fx.shape}")
-        self.fwdm.grid.write_obs_ncdf(self.fname, fx, self.fwdm.channels, obs_suffix=f"_sim{suffix}",
-                                      obs_suffix_long=f", forward model simulation for {long_suffix}")
+        self.fwdm.obs.write_obs_ncdf(self.fname, fx, obs_suffix=f"_sim{suffix}",
+                                     obs_suffix_long=f", forward model simulation for {long_suffix}")
 
     def _mkl_LM_iteration(self, xp, K, fx, lm):
         tic = time.time()

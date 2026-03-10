@@ -1,6 +1,7 @@
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm
+from mats_l2_processing.util import geoid_radius
 
 
 def plot_2d(x_coord, y_coord, data, fname=None, val_range=None, percentile_range=[1, 99],
@@ -96,3 +97,17 @@ def plot_slice(coords, data, slice_axis, pos, **kwargs):
             kwargs[label] = axes_labels[idx]
 
     plot_2d(dcoords[plot_coord_idx[0]], dcoords[plot_coord_idx[1]], pdata.T, **kwargs)
+
+
+def plot_apr_from_1d(grid_1d, ver_1d, grid, ver_from_1d, gridded=None):
+    eff_rad_km = geoid_radius(np.mean(grid.lat)) * 1e-3 + 80
+    cid = int(np.floor(len(grid.centers[1]) / 2))
+    plot_2d(grid_1d.img_time - grid_1d.img_time[0], grid_1d.centers[0] * 1e-3, ver_1d, fname="1d_ver_raw",
+            xlabel="Exposure time, s", ylabel="Altitude, km")
+    plot_2d(grid.centers[2] * eff_rad_km, grid.centers[0] * 1e-3, ver_from_1d[:, cid, :].T, fname="1d_ver_interp",
+            xlabel="Exposure time, s", ylabel="Altitude, km")
+    if gridded is not None:
+        plot_2d(grid.centers[2] * eff_rad_km, grid.centers[0] * 1e-3, gridded["VER_apr"][:, cid, :].T,
+                fname="1d_ver_apr", xlabel="Exposure time, s", ylabel="Altitude, km")
+        plot_2d(grid.centers[2] * eff_rad_km, grid.centers[0] * 1e-3, gridded["T_apr"][:, cid, :].T,
+                fname="1d_t_apr", xlabel="Exposure time, s", ylabel="Altitude, km")

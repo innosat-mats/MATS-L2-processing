@@ -37,10 +37,16 @@ def get_image(data, idx, var, size=None):
     return res
 
 
-def multiprocess(func, dataset, image_args, nproc, common_args, unzip=False, stack=False):
+def multiprocess(func, dataset, image_args, nproc, common_args, unzip=False, stack=False,
+                 numbers_only=False):
     assert nproc >= 1, "Invalid number of processes specified!"
-    size = dataset["size"]
-    images = [get_image(dataset, i, image_args, size=size) for i in range(size)]
+    if numbers_only:
+        size = dataset
+        images = list(range(size))
+    else:
+        size = dataset["size"]
+        images = [get_image(dataset, i, image_args, size=size) for i in range(size)]
+
     if nproc == 1:  # Serial processing (implemented separately to simplify debugging)
         res = []
         # if len(common_args) > 0:

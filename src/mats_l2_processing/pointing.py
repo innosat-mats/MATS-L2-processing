@@ -13,10 +13,8 @@ from skyfield.framelib import itrs
 
 class Pointing():
     def __init__(self, metadata, conf, const):
-        limb_channels = ["IR1", "IR2", "IR3", "IR4", "UV1", "UV2"]
-        self.channels = list(set(metadata["channel"].tolist()).intersection(limb_channels))
-        if len(self.channels) < 1:
-            raise ValueError("Invalid data supplied for pointiing initialization!")
+        verify_channels(conf, metadata)
+        self.channels = conf.CHANNELS
 
         if conf.DISTORTION_CORRECTION:
             dist_data = read_ncdf(conf.DISTORTION_DATA, None, get_units=False)
@@ -24,10 +22,11 @@ class Pointing():
             dist_data = None
 
         self.deg_map = {}
-        for chn in self.channels:
-            idx = metadata["channel"].tolist().index(chn)
-            self.deg_map[chn] = get_deg_map({v: metadata[v][idx] if len(metadata[v].shape) > 0 else metadata[v]
-                                             for v in const.POINTING_DATA}, dist_data=dist_data)
+        num_meta = len(self.channels) if conf.SEP_CHN_LOS else 1
+        for chid in range(num_meta):
+            self.deg_map[self.channels[chid]] = get_deg_map({v: metadata[chid][v][0] if len(metadata[chid][v].shape) > 0
+                                                            else metadata[v] for v in const.POINTING_DATA},
+                                                            dist_data=dist_data)
 
     def pix_deg(self, image, xpix, ypix):
         return self.deg_map[image["channel"]][:, xpix, ypix]
@@ -206,3 +205,25 @@ def get_deg_map(mdata, dist_data):
     xdeg = np.rad2deg(np.arctan(x_disp * (xx_full - 2047.0 / 2 - xdistortion.T)))
     ydeg = np.rad2deg(np.arctan(y_disp * (yy_full - 510.0 / 2 - ydistortion.T)))
     return np.stack([xdeg, ydeg], axis=0)
+
+
+def verify_channels(conf, metadata):
+    limb_channels = ["IR1", "IR2", "IR3", "IR4", "UV1", "UV2"]
+
+    num_chn = len(conf.CHANNELS)
+    num_meta = len(metadata)
+
+    if num_chn < 1:
+        raise ValueError("Configuration error: empty channel list!")
+    invalid_ch = set(conf.CHANNELS).difference(set(limb_channels))
+    if len(invalid_ch) > 0:
+        raise ValueError("Invalid channels {invalid_ch} specified!")
+    if num_meta < 1:
+        raise ValueError("No metadata found: were correct input files supplied and read?")
+    if num_meta > 1:
+        assert num_meta == num_chn, "Configuration requires separate input file for each channel" +\
+            f", but got {num_meta} input files for {num_chn} channels!"
+        assert set([metadata[i]["channel"][0] for i in range(num_meta)]) == set(conf.CHANNELS), \
+            "The input files do not match the channel specification in conf. file! Abort!"
+    if num_meta == 1 and conf.SEP_CHN_LOS:
+        assert num_chn == 1, f"Conf. requires {num_chn} channels in sep. input files, but got 1 file only!"

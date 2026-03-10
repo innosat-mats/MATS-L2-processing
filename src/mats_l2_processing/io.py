@@ -21,7 +21,7 @@ def read_ncdf(fname, vnames, get_units=False):
 
 
 def read_L1_ncdf(filename, var=None, start_img=None, stop_img=None, start_time=None, stop_time=None,
-                 time_var='EXPDate', read_ncattrs=True):
+                 time_var='EXPDate', read_ncattrs=True, center_times=False):
     res = {}
     with nc.Dataset(filename, 'r') as nf:
         # Read in global attributes
@@ -41,7 +41,6 @@ def read_L1_ncdf(filename, var=None, start_img=None, stop_img=None, start_time=N
                 nf[time_var][:] * DT.timedelta(0, 1)
             start = 0 if start_time is None else np.nanargmin(np.abs(time - start_time))
             stop = size if stop_time is None else np.nanargmin(np.abs(time - stop_time)) + 1
-            print("start/stop from times")
         else:
             start, stop = 0, size
 
@@ -52,6 +51,7 @@ def read_L1_ncdf(filename, var=None, start_img=None, stop_img=None, start_time=N
 
         if var is None:
             var = nf.variables
+
 
         for name in var:
             v = nf[name]
@@ -70,7 +70,11 @@ def read_L1_ncdf(filename, var=None, start_img=None, stop_img=None, start_time=N
                     res[name] = np.array([v[:] for _ in range(stop - start)])
 
         res["size"] = res[var[0]].shape[0]
-        print(var[0], start, stop)
+
+        if center_times:
+            res["EXPDate_s"] = res["EXPDate_s"] + res["TEXPMS"] * 5e-4
+            res["EXPDate"] = np.array([date + exposure * 5e-4 * DT.timedelta(0, 1)
+                                      for date, exposure in zip(res["EXPDate"], res["TEXPMS"])])
         logging.info(f"Read {res['size']} images.")
     return res
 
@@ -119,7 +123,7 @@ def append_gen_ncdf(fname, var_spec, attributes={}, overwrite=False):
             nf.setncatts(attributes)
 
 
-def write_ncdf_L1b(pdata, outfile, channel, version, im_calibrated=True):
+def write_ncdf_L1b(pdata, outfile, channel, version, im_calibrated=True, var=None):
     with nc.Dataset(outfile, 'w') as nf:
         num_images = len(pdata)
         # Global parameters
@@ -158,7 +162,9 @@ def write_ncdf_L1b(pdata, outfile, channel, version, im_calibrated=True):
         handled_vars = list(nf.variables.keys())
         if not im_calibrated:
             handled_vars = handled_vars + ["ImageCalibrated", "CalibrationErrors", "BadColumns"]
-        for var in pdata.keys():
+
+        all_vars = pdata.keys() if var is None else var
+        for var in all_vars:
             if var not in handled_vars:
                 data = pdata[var].to_numpy()
                 ncdf_create_var(data, nf, var, ("num_images", ), type(data.flat[0]))

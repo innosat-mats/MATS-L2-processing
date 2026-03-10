@@ -5,6 +5,7 @@ from scipy import sparse
 import logging
 import time
 from sparse_dot_mkl import dot_product_mkl as mdot
+from scipy.sparse import coo_matrix
 
 
 class Implicit_sparse_matrix(ABC):
@@ -89,6 +90,24 @@ def cost_func(x, xa, y, fx, Seinv, Sainv, debug_nan=False):
 
 def csr_clear_row(csr, row):
     csr.data[csr.indptr[row]:csr.indptr[row + 1]] = 0
+
+
+def valid_coo_row(matrix, is_valid):
+    assert matrix.shape[0] == 1, "The matrix must be a row vector!"
+    valid_idx = is_valid[matrix.col]
+    return coo_matrix((matrix.data[valid_idx], (matrix.row[valid_idx], matrix.col[valid_idx])),
+                      shape=matrix.shape)
+
+
+def coo_add(m1, m2, m2_factor=1.0):
+    if type(m1) is np.ndarray:
+        return m1 + m2
+    res = []
+    for m in range(len(m1)):
+        res.append(coo_matrix((np.concatenate([m1[m].data, m2_factor * m2[m].data]),
+                              (np.concatenate([m1[m].row, m2[m].row]), np.concatenate([m1[m].col, m2[m].col]))),
+                   shape=m1[m].shape))
+    return res
 
 
 def nannorm(data, calc_name, abort=True):

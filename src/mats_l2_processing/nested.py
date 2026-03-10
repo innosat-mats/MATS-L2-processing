@@ -2,6 +2,7 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.interpolate import interp1d
 
+from mats_l2_processing.obs import Obs
 from mats_l2_processing.regularisation import Sa_inv_multivariate
 from mats_l2_processing.util import geoid_radius, sph2cart, cart2sph, array_shifts
 from mats_l2_processing.atm import gridded_data
@@ -11,17 +12,20 @@ from mats_l2_processing.solver import Linear_solver
 from mats_l2_processing.parameters import get_updated_conf
 
 
-def nested_VER_1D(conf, const, metadata, main_data, rt_data, prefix, processes=1):
+def nested_VER_1D(conf, const, metadata, obs_files, rt_data, prefix, processes=1):
+   
     # Create an updated configuration for 1D retrieval
+    column = int(np.floor(metadata[0]["NCOL"][0] / 2))
     vars_1D = {"RET_QTY": ["VER"],
                "SCALES": [1e4],
                "BOUNDS": [(0, 2e8)],
-               "AUX_QTY": ["O2", "T"]}
+               "AUX_QTY": ["O2", "T"],
+               "SEP_CHN_LOS": False,
+               "COL_RANGE": [column, column + 1]}
     conf_1d = get_updated_conf(conf, vars_1D)
 
     # Setup 1D grid
-    column = int(np.floor(metadata["NCOL"][0] / 2))
-    grid = Alt_1D_stacked_grid(metadata, conf_1d, const, column, processes=processes, verify=False)
+    grid = Alt_1D_stacked_grid(metadata, conf_1d, const, processes=processes, verify=False)
 
     # Setup a priori and aux data
     # idx = ["VER_apr" in item[0] for item in conf.GRIDDED_PRE].index(True)
@@ -31,15 +35,16 @@ def nested_VER_1D(conf, const, metadata, main_data, rt_data, prefix, processes=1
     aux = [gridded["O2"], gridded["T_apr"]]
 
     # Setup forward model
-    fwdm = Forward_model_temp_abs(conf_1d, const, grid, metadata, aux, rt_data, combine_images=False)
-    obs = fwdm.prepare_obs(conf_1d, main_data, {"IR1": "IR1c", "IR2": "IR2c"})
+    obs = Obs(grid, metadata, conf_1d, const, processes)
+    fwdm = Forward_model_temp_abs(conf_1d, const, grid, obs, aux, rt_data, combine_images=False)
 
     # Setup inverse model
+    obs_data = obs.prepare_obs_data(conf_1d, obs_files)
     Sa_inv, terms = Sa_inv_multivariate((grid.centers), conf.SA_WEIGHTS_1D_APR, volume_factors=True,
                                         store_terms=False, var_scales=None)
     num_im_obs = len(grid.rows) * len(conf_1d.CHANNELS)
     Se_inv = sp.diags(np.ones(num_im_obs), 0).astype('float32') / (conf.RAD_SCALE ** 2 * num_im_obs)
-    solver = Linear_solver(fwdm, obs, conf_1d, Sa_inv, Se_inv, atm_apr, fname=f"{prefix}_ver_1D_apr")
+    solver = Linear_solver(fwdm, obs_data, conf_1d, Sa_inv, Se_inv, atm_apr, fname=f"{prefix}_ver_1D_apr")
 
     # Solve and write the result to the nc file
     atm_res = solver.solve(processes)

@@ -8,18 +8,18 @@ from mats_l2_processing.util import get_image, cart2sph, sph2cart, geoid_radius,
     make_grid_proto, grid_from_proto
 from mats_l2_processing.io import write_gen_ncdf, append_gen_ncdf
 from mats_l2_processing.grid import Grid
-
 import logging
 
 
 class Alt_1D_stacked_grid(Grid):
-    def __init__(self, metadata, conf, const, column, processes=1, verify=False):
-        super().__init__(metadata, conf, const, processes)
+    def __init__(self, all_metadata, conf, const, processes=1, verify=False):
+        super().__init__(all_metadata, conf, const, processes)
+        metadata = all_metadata[0]
 
         # Initialize basic grid
-        row_range = (0, metadata["NROW"][0]) if conf.ROW_RANGE[0] < 0 else conf.ROW_RANGE
-        self.rows = np.arange(row_range[0], row_range[1], 1)
-        self.columns = np.array([column])
+        if len(self.columns) != 1:
+            raise NotImplementedError("Alt_1D_stacked_grid is only implemented for a single column," +
+                                      f" but {len(self.columns)} requested in configuration.")
 
         self.local_geoid_radius = geoid_radius(np.deg2rad(np.mean(metadata["TPlat"])))
         lims = self.grid_limits(metadata)
@@ -91,7 +91,8 @@ class Alt_1D_stacked_grid(Grid):
         ncvars = {"altitude": ("Altitude", "meter", self.alt, dims),
                   "longitude": ("Longitude", "degree_east", self.lon, dims),
                   "latitude": ("Latitude", "degree_north", self.lat, dims),
-                  "TPheight": ("Tangent point height", "meter", self.TP_heights[:, 0, :], ("img_time", "img_row"))}
+                  # "TPheight": ("Tangent point height", "meter", self.TP_heights[:, 0, :], ("img_time", "img_row"))
+                  }
 
         write_gen_ncdf(fname, dim_pars, ncvars, attributes)
 
@@ -104,14 +105,14 @@ class Alt_1D_stacked_grid(Grid):
                                             dims)
         append_gen_ncdf(fname, ncvars)
 
-    def write_obs_ncdf(self, fname, obs, channels, obs_suffix="", obs_suffix_long="", attributes={}):
-        ncvars = {}
-        dims = ("img_time", "img_col", "img_row")
-        # dims = ("img_time", "alt_coord")
-        for i, chn in enumerate(channels):
-            ncvars[f"{chn}{obs_suffix}"] = (f"{self.ncpar[chn][0]}{obs_suffix_long}", self.ncpar[chn][1],
-                                            obs[i, :, :, :], dims)
-        append_gen_ncdf(fname, ncvars, attributes=attributes)
+    # Obs def write_obs_ncdf(self, fname, obs, channels, obs_suffix="", obs_suffix_long="", attributes={}):
+    #    ncvars = {}
+    #    dims = ("img_time", "img_col", "img_row")
+    #    # dims = ("img_time", "alt_coord")
+    #    for i, chn in enumerate(channels):
+    #        ncvars[f"{chn}{obs_suffix}"] = (f"{self.ncpar[chn][0]}{obs_suffix_long}", self.ncpar[chn][1],
+    #                                        obs[i, :, :, :], dims)
+    #    append_gen_ncdf(fname, ncvars, attributes=attributes)
 
     def _get_lat_lon(self, metadata):
         shape = metadata["TPECEFz"].shape[:2]

@@ -1,17 +1,40 @@
 from abc import ABC, abstractmethod
 import numpy as np
 from itertools import product
+from scipy.sparse import coo_matrix
 
 
 class Interpolator(ABC):
     def __init__(self, grid):
         self.edges = grid.edges
         self.shape = [len(c) for c in grid.centers]
+        self.numpoints = np.prod(self.shape)
+        self.coord_factors = [np.prod(self.shape[j + 1:]) for j in range(len(self.shape) - 1)] + [1]
         # self.shape = grid.atm_shape[1:]
 
     @abstractmethod
     def interpolate(self, pos, data):
         pass
+
+    def grad_path2grid_sp(self, pathGrad, pWeights):
+        numw = len(pWeights[1])
+        shape = (1, self.numpoints)
+
+        cols = np.empty((pathGrad.shape[0], numw), dtype=int)
+        vals = np.empty((pathGrad.shape[0], numw))
+        rows = np.stack([np.full((numw,), i) for i in range(pathGrad.shape[0])], axis=0)
+
+        it = np.nditer(pWeights[1], flags=["c_index", "multi_index"])
+        for w in it:
+            coord = pWeights[0][it.multi_index[0], it.multi_index[1], :]
+            cols[:, it.index] = sum([coord[c] * self.coord_factors[c] for c in range(pWeights.shape[2])])
+            vals[:, it.index] = w * pathGrad[:, it.multi_index[0]]
+
+        res = []
+        for c in range(pathGrad.shape[0]):
+            res.append(coo_matrix((vals[c, :], (rows[c, :], cols[c, :])), shape=shape))
+            res[-1].sum_duplicates()
+        return res
 
 
 class Trilinear_interpolator_3D(Interpolator):
@@ -19,6 +42,26 @@ class Trilinear_interpolator_3D(Interpolator):
         super().__init__(grid)
 
     def grad_path2grid(self, pathGrad, pWeights):
+        numw = pWeights[1].shape[0] * pWeights[1].shape[1]
+        shape = (1, self.numpoints)
+
+        vals = np.empty((pathGrad.shape[0], numw))
+        rows = np.zeros(numw, dtype=int)
+        cols = np.empty(numw, dtype=int)
+
+        it = np.nditer(pWeights[1], flags=["c_index", "multi_index"])
+        for w in it:
+            coord = pWeights[0][it.multi_index[0], it.multi_index[1], :]
+            cols[it.index] = sum([coord[c] * self.coord_factors[c] for c in range(pWeights[0].shape[2])])
+            vals[:, it.index] = w * pathGrad[:, it.multi_index[0]]
+
+        res = []
+        for c in range(pathGrad.shape[0]):
+            res.append(coo_matrix((vals[c, :], (rows, cols)), shape=shape))
+            # res[-1].sum_duplicates()
+        return res
+
+    def grad_path2grid_dense(self, pathGrad, pWeights):
         res = np.zeros((pathGrad.shape[0], *self.shape))
         it = np.nditer(pWeights[1], flags=["multi_index"])
         for w in it:
