@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 import numpy as np
-from itertools import product
+from itertools import product, chain
 from scipy.sparse import coo_matrix
 
 
@@ -12,34 +12,43 @@ class Interpolator(ABC):
         self.coord_factors = [np.prod(self.shape[j + 1:]) for j in range(len(self.shape) - 1)] + [1]
         # self.shape = grid.atm_shape[1:]
 
+        self.grad_add = None
+        self.postprocess_grads = None
+
     @abstractmethod
     def interpolate(self, pos, data):
         pass
 
-    def grad_path2grid_sp(self, pathGrad, pWeights):
-        numw = len(pWeights[1])
-        shape = (1, self.numpoints)
+    @abstractmethod
+    def grad_path2grid(self, pathGrad, pWeights):
+        pass
 
-        cols = np.empty((pathGrad.shape[0], numw), dtype=int)
-        vals = np.empty((pathGrad.shape[0], numw))
-        rows = np.stack([np.full((numw,), i) for i in range(pathGrad.shape[0])], axis=0)
+    @staticmethod
+    def grad_add_dense(ml1, ml2, m2_factor=1.0):
+        return ml1 + m2_factor * ml2
 
-        it = np.nditer(pWeights[1], flags=["c_index", "multi_index"])
-        for w in it:
-            coord = pWeights[0][it.multi_index[0], it.multi_index[1], :]
-            cols[:, it.index] = sum([coord[c] * self.coord_factors[c] for c in range(pWeights.shape[2])])
-            vals[:, it.index] = w * pathGrad[:, it.multi_index[0]]
+    @staticmethod
+    def grad_add_sparse(ml1, ml2, m2_factor=1.0):
+        return [coo_matrix((np.concatenate([m1.data, m2_factor * m2.data]),
+                           (np.concatenate([m1.row, m2.row]), np.concatenate([m1.col, m2.col]))),
+                           shape=m1.shape) for m1, m2 in zip(ml1, ml2)]
 
-        res = []
-        for c in range(pathGrad.shape[0]):
-            res.append(coo_matrix((vals[c, :], (rows[c, :], cols[c, :])), shape=shape))
-            res[-1].sum_duplicates()
-        return res
+    @staticmethod
+    def postprocess_grads_dense(grads):
+        for grad in chain(*grads):
+            grad.flatten()
+
+    @staticmethod
+    def postprocess_grads_sparse(grads):
+        for grad in chain(*grads):
+            grad.sum_duplicates()
 
 
 class Trilinear_interpolator_3D(Interpolator):
     def __init__(self, grid):
         super().__init__(grid)
+        self.grad_add = self.grad_add_sparse
+        self.postprocess_grads = self.postprocess_grads_sparse
 
     def grad_path2grid(self, pathGrad, pWeights):
         numw = pWeights[1].shape[0] * pWeights[1].shape[1]
@@ -55,11 +64,7 @@ class Trilinear_interpolator_3D(Interpolator):
             cols[it.index] = sum([coord[c] * self.coord_factors[c] for c in range(pWeights[0].shape[2])])
             vals[:, it.index] = w * pathGrad[:, it.multi_index[0]]
 
-        res = []
-        for c in range(pathGrad.shape[0]):
-            res.append(coo_matrix((vals[c, :], (rows, cols)), shape=shape))
-            # res[-1].sum_duplicates()
-        return res
+        return [coo_matrix((vals[c, :], (rows, cols)), shape=shape) for c in range(pathGrad.shape[0])]
 
     def grad_path2grid_dense(self, pathGrad, pWeights):
         res = np.zeros((pathGrad.shape[0], *self.shape))
@@ -93,6 +98,8 @@ class Trilinear_interpolator_3D(Interpolator):
 class Linear_interpolator_1D(Interpolator):
     def __init__(self, grid):
         super().__init__(grid)
+        self.grad_add = self.grad_add_dense
+        self.postprocess_grads = self.postprocess_grads_dense
 
     def grad_path2grid(self, pathGrad, pWeights):
         res = np.zeros((pathGrad.shape[0], *self.shape))

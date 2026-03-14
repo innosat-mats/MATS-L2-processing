@@ -161,14 +161,6 @@ class Alt_along_3D_grid(Grid):
                                             dims)
         append_gen_ncdf(fname, ncvars)
 
-    # Obs def write_obs_ncdf(self, fname, obs, channels, obs_suffix="", obs_suffix_long="", attributes={}):
-    #    ncvars = {}
-    #    dims = ("img_time", "img_col", "img_row")
-    #    for i, chn in enumerate(channels):
-    #        ncvars[f"{chn}{obs_suffix}"] = (f"{self.ncpar[chn][0]}{obs_suffix_long}", self.ncpar[chn][1],
-    #                                        obs[i, :, :, :], dims)
-    #    append_gen_ncdf(fname, ncvars, attributes=attributes)
-
     def interpolate_from_3D(self, ext_coords, ext_data):
         # Prepare coordinates
         ret_coords = np.zeros(list(self.alt.shape) + [3])

@@ -2,6 +2,7 @@ import datetime as DT
 from multiprocessing import Pool
 import numpy as np
 from itertools import chain, repeat
+from scipy.sparse import coo_matrix
 
 
 def get_filter(channel):
@@ -259,3 +260,13 @@ def ecef2wgs84(pos):
     phi = np.arctan((z + ep_sq * z_0) / r)
     lambd = np.arctan2(y, x)
     return phi, lambd, h
+
+
+def valid_row(matrix, is_valid, is_sparse, factor=1.0):
+    if is_sparse:
+        assert matrix.shape[0] == 1, "The matrix must be a row vector!"
+        valid_idx = is_valid[matrix.col]
+        return coo_matrix((matrix.data[valid_idx], (matrix.row[valid_idx], matrix.col[valid_idx])),
+                          shape=matrix.shape).multiply(factor)
+    else:
+        return np.where(is_valid, matrix, 0.0).reshape(1, -1) * factor

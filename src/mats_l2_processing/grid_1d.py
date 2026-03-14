@@ -105,15 +105,6 @@ class Alt_1D_stacked_grid(Grid):
                                             dims)
         append_gen_ncdf(fname, ncvars)
 
-    # Obs def write_obs_ncdf(self, fname, obs, channels, obs_suffix="", obs_suffix_long="", attributes={}):
-    #    ncvars = {}
-    #    dims = ("img_time", "img_col", "img_row")
-    #    # dims = ("img_time", "alt_coord")
-    #    for i, chn in enumerate(channels):
-    #        ncvars[f"{chn}{obs_suffix}"] = (f"{self.ncpar[chn][0]}{obs_suffix_long}", self.ncpar[chn][1],
-    #                                        obs[i, :, :, :], dims)
-    #    append_gen_ncdf(fname, ncvars, attributes=attributes)
-
     def _get_lat_lon(self, metadata):
         shape = metadata["TPECEFz"].shape[:2]
         tp_ecef = np.stack([metadata[name][:, :, self.columns[0]].flatten()

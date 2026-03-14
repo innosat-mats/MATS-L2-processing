@@ -23,8 +23,6 @@ class Grid(ABC):
         self.edges = None
         self.rows, self.columns = get_row_col(conf, metadata)
 
-        # Obs self.columns = None
-        # Obs self.rows = None
         # self.ecef_to_local = None
         self.stepsize = conf.STEP_SIZE
         self.top_alt = conf.TOP_ALT
@@ -41,7 +39,6 @@ class Grid(ABC):
         self.bounds = conf.BOUNDS
 
         # Set geometric parameters of observations
-        # Obs self.TP_heights_vars = const.TP_VARS
         self.img_time = metadata["EXPDate_s"]
         self.valid_time = np.mean(metadata["EXPDate_s"])
 
@@ -165,18 +162,6 @@ class Grid(ABC):
         res = np.maximum(vec, self.lims[0, :])
         res = np.minimum(res, self.lims[1, :])
         return res
-
-    # Obs def _calc_tp_heights_image(self, image, common_args):
-    #    # res = np.empty((len(self.columns), len(self.rows)))
-    #    # for c, col in enumerate(self.columns):
-    #    #     cs = col_heights(image, col, 10, spline=True)
-    #    #     res[c, :] = np.array(cs(self.rows))
-    #    #heights = faster_heights(image, self.pointing)
-    #    #breakpoint()
-    #    return faster_heights(image, self.pointing, cols=self.columns, rows=self.rows).T
-
-    # Obs  def _calc_tp_heights(self, metadata, processes):
-    #     return multiprocess(self._calc_tp_heights_image, metadata, self.TP_heights_vars, processes, [], stack=True)
 
     @staticmethod
     def generate_local_transform(data, timescale):

@@ -4,7 +4,7 @@ import scipy.sparse as sp
 from multiprocessing import Pool
 from itertools import repeat
 
-from sparse_dot_mkl import dot_product_mkl as mdot
+from sparse_dot_mkl import dot_product_mkl
 import time
 import logging
 import mats_l2_processing.numerical_methods as num
@@ -20,6 +20,8 @@ class Solver(ABC):
         self.Se_inv = Se_inv
         self.xa = self.fwdm.grid.atm2vec(atm_apr)
         self.Sa_terms = {"Sa": self.Sa_inv} if Sa_terms is None else Sa_terms
+
+        self.mdot = dot_product_mkl if self.fwdm.sparse else np.dot
 
     # @abstractmethod
     # def solve(self, nproc):
@@ -81,14 +83,14 @@ class Linear_solver(Solver):
 
         xpr = np.zeros_like(self.xa) if self.atm_init is None else self.fwdm.grid.atm2vec(atm_init) - self.xa
         if self.fwdm.grid.combine_images:
-            sol = self._mkl_step((xpr, jac, fx.flatten(), self.y_ar), [])
+            sol = self._solve_eq((xpr, jac, fx.flatten(), self.y_ar), [])
         else:
             yari = self.y_ar.reshape(self.obs_shape)
             im_args = [(self.fwdm.grid.get_imvec(xpr, i), jac[i], fx[i].flatten(), yari[:, i, :, :].flatten())
                        for i in range(self.fwdm.grid.atm_shape[1])]
             del yari
             with Pool(processes=nproc) as pool:
-                sols = pool.starmap(self._mkl_step, zip(im_args, repeat([])))
+                sols = pool.starmap(self._solve_eq, zip(im_args, repeat([])))
             sol = self.fwdm.grid.imvecs2vec(sols)
         atm_res = self.fwdm.grid.vec2atm(sol)
 
@@ -96,11 +98,11 @@ class Linear_solver(Solver):
             self.fwdm.grid.write_atm_ncdf(self.fname, atm_res, atm_suffix="", atm_suffix_long=", final result")
         return atm_res
 
-    def _mkl_step(self, im_args, common_args):
+    def _solve_eq(self, im_args, common_args):
         xpr, K, fx, y_ar = im_args
-        b = mdot(self.Sa_inv, xpr) +\
-            mdot(K.T, self.Se_inv @ num.nannorm((fx - y_ar), "fx", abort=(not self.fwdm.debug_nan)))
-        A = num.LM_mkl_sparse_matrix(K, self.Se_inv, self.Sa_inv, lm=0)
+        b = self.Sa_inv @ xpr +\
+            self.mdot(K.T, self.Se_inv @ num.nannorm((fx - y_ar), "fx", abort=(not self.fwdm.debug_nan)))
+        A = num.LM_matrix(K, self.Se_inv, self.Sa_inv, lm=0)
         dx, resid_norm, iters = num.cg_solve(A, b, x_init=np.zeros_like(xpr), atol=self.conf.CG_ATOL,
                                              rtol=self.conf.CG_RTOL, maxiter=self.conf.CG_MAX_STEPS)
         return xpr - dx
@@ -149,12 +151,12 @@ class Lavenberg_marquardt_solver(Solver):
         self.fwdm.obs.write_obs_ncdf(self.fname, fx, obs_suffix=f"_sim{suffix}",
                                      obs_suffix_long=f", forward model simulation for {long_suffix}")
 
-    def _mkl_LM_iteration(self, xp, K, fx, lm):
+    def _LM_iteration(self, xp, K, fx, lm):
         tic = time.time()
-        b = mdot(self.Sa_inv, xp - self.xa) +\
-            mdot(K.T, self.Se_inv @ num.nannorm((fx - self.y_ar), "fx", abort=(not self.fwdm.debug_nan)))
+        b = self.mdot(self.Sa_inv, xp - self.xa) +\
+            self.mdot(K.T, self.Se_inv @ num.nannorm((fx - self.y_ar), "fx", abort=(not self.fwdm.debug_nan)))
         logging.log(15, "Solver: b calculated.")
-        A = num.LM_mkl_sparse_matrix(K, self.Se_inv, self.Sa_inv, lm=lm)
+        A = num.LM_matrix(K, self.Se_inv, self.Sa_inv, lm=lm)
         dx, resid_norm, iters = num.cg_solve(A, b, x_init=np.zeros_like(xp), atol=self.conf.CG_ATOL,
                                              rtol=self.conf.CG_RTOL, maxiter=self.conf.CG_MAX_STEPS)
         logging.log(15, f"Solver: calculated new atmosphere state in {time.time() - tic:.3f} s.")
@@ -208,7 +210,7 @@ class Lavenberg_marquardt_solver(Solver):
             lms = [lm_par * float(self.conf.LM_FAC) ** x for x in range(-1, self.conf.LM_MAX_FACTS_PER_ITER + 1)]
             for j, lm in enumerate(lms):
                 sol["lm"] = lm
-                xhat = self._mkl_LM_iteration(xp, K, fxp.flatten(), lm)
+                xhat = self._LM_iteration(xp, K, fxp.flatten(), lm)
                 sol["sol"] = self.fwdm.grid.reset_invalid(xhat)
                 sol["fx"] = self.fwdm.calc_fwdm(self.fwdm.grid.vec2atm(sol["sol"]), nproc)
                 sol["cf"] = num.cost_func(sol["sol"], self.xa, self.y_ar, sol["fx"].flatten(), self.Se_inv,
