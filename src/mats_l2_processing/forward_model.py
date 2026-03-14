@@ -141,9 +141,9 @@ class Forward_model(ABC):
 
         for jac in jacs:
             if np.isnan(jac.data if self.sparse else jac).any():
-                raise RuntimeError("Jacobian: Nan's encountered in jacobian (image #{num_simage})! Abort!")
-        logging.log(15, f"Jacobian: Image {num_simage} processed in {time.time()-tic:.1f} s" +
-                    f"(LOS:{los_time:.1f}, RT:{rt_time:.1f}, ST:{st_time:.1f}), WH:{wh_time:.1f})")
+                raise RuntimeError("Jacobian: NaN encountered in jacobian (image {num_simage})! Abort!")
+        logging.log(15, f"Jacobian: Image {num_simage} processed in {time.time() - tic:.1f} s" +
+                    f"(LOS:{los_time:.1f}, RT:{rt_time:.1f}, ST:{st_time:.1f}, WH:{wh_time:.1f})")
         return jacs, fx_im
 
     def calc_fwdm_jac(self, atm, processes=1):
@@ -177,7 +177,7 @@ class Forward_model(ABC):
                 jac = [j.tocsr() for j in jac]
         del im_jacs, im_fx
 
-        logging.log(15, f"Jacobian: Stacking took {stack_start - time.time():.1f} s")
+        logging.log(15, f"Jacobian: Stacking took {time.time() - stack_start:.1f} s")
         if np.isnan(fx).any():
             raise RuntimeError("Forward model: Nan's encountered in fx! Abort!")
         return jac, fx

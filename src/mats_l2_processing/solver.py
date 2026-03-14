@@ -75,6 +75,7 @@ class Linear_solver(Solver):
                 fx_f = fx.reshape(self.obs_shape)
             else:
                 fx_f = np.concatenate([fx_im[:, np.newaxis, :, :] for fx_im in fx], axis=1)
+            self.fwdm.obs.write_TPheights_ncdf(self.fname)
             self.fwdm.obs.write_obs_ncdf(self.fname, fx_f, obs_suffix="_sim_apr",
                                          obs_suffix_long="forward model simulation from a priori")
             del fx_f
@@ -132,6 +133,7 @@ class Lavenberg_marquardt_solver(Solver):
             self.fwdm.grid.write_grid_ncdf(self.fname, atts)
             self.fwdm.grid.write_atm_ncdf(self.fname, self.atm_apr, atm_suffix="_apr", atm_suffix_long=", a priori")
             atts = {}
+        self.fwdm.obs.write_TPheights_ncdf(self.fname)
         self.fwdm.obs.write_obs_ncdf(self.fname, self.y.reshape(fx.shape),
                                      obs_suffix_long=", MATS observation")
         self.fwdm.obs.write_obs_ncdf(self.fname, fx, obs_suffix="_sim_apr", attributes=atts,

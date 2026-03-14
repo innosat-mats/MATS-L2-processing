@@ -65,8 +65,15 @@ class Obs(ABC):
         for i, chn in enumerate(self.channels):
             ncvars[f"{chn}{obs_suffix}"] = (f"{self.grid.ncpar[chn][0]}{obs_suffix_long}", self.grid.ncpar[chn][1],
                                             obs_data[i, :, :, :], dims)
-        # TODO: add TP heights!
         append_gen_ncdf(fname, ncvars, attributes=attributes)
+
+    def write_TPheights_ncdf(self, fname):
+        ncvars = {}
+        dims = ("img_time", "img_col", "img_row")
+        TP_channels = self.channels if self.sep_chn_los else [self.channels[0]]
+        for i, chn in enumerate(TP_channels):
+            ncvars[f"TPheight_{chn}"] = (f"Tangent point height, {chn}", "meter", self.TP_heights[i, ...], dims)
+        append_gen_ncdf(fname, ncvars)
 
 
 def get_row_col(conf, metadata):
