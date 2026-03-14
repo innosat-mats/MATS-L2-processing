@@ -20,7 +20,7 @@ def nested_VER_1D(conf, const, metadata, obs_files, rt_data, prefix, processes=1
                "SCALES": [1e4],
                "BOUNDS": [(0, 2e8)],
                "AUX_QTY": ["O2", "T"],
-               "SEP_CHN_LOS": False,
+               "SEP_CHN_LOS": True,
                "COL_RANGE": [column, column + 1]}
     conf_1d = get_updated_conf(conf, vars_1D)
 
