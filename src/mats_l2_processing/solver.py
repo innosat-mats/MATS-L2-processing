@@ -48,25 +48,39 @@ class Solver(ABC):
 
 
 class Linear_solver(Solver):
-    def __init__(self, fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, fname=None, Sa_terms=None, atm_init=None):
+    def __init__(self, fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, fname=None, Sa_terms=None, atm_init=None,
+                 save_jac=False, load_jac=False):
         super().__init__(fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, Sa_terms)
         self.prefix = fname
         self.atm_init = atm_init
-        self.fname = f"{fname}_L2_lin.nc"
+        self.fname = f"{fname}_L2.nc"
         self.conf = conf
         req_obs_shape = (len(fwdm.channels), len(fwdm.grid.img_time), len(fwdm.obs.columns), len(fwdm.obs.rows))
         assert obs_data.shape == req_obs_shape, f"obs must be of shape {req_obs_shape}, but got {obs_data.shape}!"
         self.obs_shape = req_obs_shape
 
-    def solve(self, nproc, jac=None, fx=None):
+    def solve(self, nproc, jac=None, fx=None, save_jac=False, load_jac=False):
         if self.prefix is not None:
             self.fwdm.grid.write_grid_ncdf(self.fname)
             self.fwdm.grid.write_atm_ncdf(self.fname, self.fwdm.grid.vec2atm(self.xa), atm_suffix="_apr",
                                           atm_suffix_long=", a priori")
-
+        tic = time.time()
         atm_init = self.fwdm.grid.vec2atm(self.xa) if self.atm_init is None else self.atm_init
+
         if jac is None:
-            jac, fx = self.fwdm.calc_fwdm_jac(atm_init, nproc)
+            if load_jac:
+                jac = sp.load_npz(f"{self.prefix}_K.npz")
+                fx = np.load(f"{self.prefix}_fx.npz")
+                logging.info("Jacobian loaded from file.")
+            else:
+                jac, fx = self.fwdm.calc_fwdm_jac(atm_init, nproc)
+        if save_jac:
+            sp.save_npz(f"{self.prefix}_K.npz", jac)
+            with open(f"{self.prefix}_fx.npz", 'wb') as f:
+                np.save(f, fx)
+
+        # if jac is None:
+        #    jac, fx = self.fwdm.calc_fwdm_jac(atm_init, nproc)
         # elif fx is None:
         #    fx = self.fwdm.calc_fwdm(atm_init, nproc)
 
@@ -97,6 +111,8 @@ class Linear_solver(Solver):
 
         if self.prefix is not None:
             self.fwdm.grid.write_atm_ncdf(self.fname, atm_res, atm_suffix="", atm_suffix_long=", final result")
+
+        logging.info(f"Total solver run time: {time.time() - tic} s.")
         return atm_res
 
     def _solve_eq(self, im_args, common_args):

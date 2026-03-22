@@ -3,7 +3,7 @@ import numpy as np
 # from mats_l1_processing.pointing import pix_deg
 from mats_l2_processing.pointing import Pointing, faster_heights
 from mats_l2_processing.util import get_image, center_grid, cart2sph, sph2cart, \
-    geoid_radius, multiprocess, make_grid_proto, grid_from_proto
+    geoid_radius, multiprocess, make_grid_proto, grid_from_proto, unnest
 from mats_l2_processing.io import write_gen_ncdf, append_gen_ncdf
 from mats_l2_processing.obs import get_row_col
 
@@ -31,6 +31,7 @@ class Grid(ABC):
 
         # Constants
         self.ref_alt = 80e3
+        self.fwdm_vars = const.NEEDED_DATA
 
         # Main atmospheric quantity attributes
         self.ret_qty = conf.RET_QTY
@@ -39,8 +40,8 @@ class Grid(ABC):
         self.bounds = conf.BOUNDS
 
         # Set geometric parameters of observations
-        self.img_time = metadata["EXPDate_s"]
-        self.valid_time = np.mean(metadata["EXPDate_s"])
+        self.img_time = metadata["time_s"]
+        self.valid_time = np.mean(metadata["time_s"])
 
         self.ncpar = const.ncpar
 
@@ -69,13 +70,16 @@ class Grid(ABC):
                 self.is_regular_grid = False
                 break
 
+        if verify:
+            self.verify(metadata, processes)
+
     def calc_los_image(self, image, common_args):
         # tic = time.time()
         rot_sat_channel = R.from_quat(image['qprime'])  # Rotation between satellite pointing and channel pointing
         q = image['afsAttitudeState']  # Satellite pointing in ECI
         rot_sat_eci = R.from_quat(np.roll(q, -1))  # Rotation matrix for q (should go straight to ecef?)
 
-        current_ts = self.timescale.from_datetime(image["EXPDate"])
+        current_ts = self.timescale.from_datetime(image["time"])
         localR = np.linalg.norm(sfapi.wgs84.latlon(image["TPlat"], image["TPlon"],
                                                    elevation_m=0).at(current_ts).position.m)
         eci_to_ecef = R.from_matrix(itrs.rotation_at(current_ts))
@@ -105,7 +109,7 @@ class Grid(ABC):
 
     def _get_steps_in_ecef(self, image, satpos_ecef, los_ecef, localR=None):
         if localR is None:
-            date = image['EXPDate']
+            date = image['time']
             current_ts = self.timescale.from_datetime(date)
             localR = np.linalg.norm(sfapi.wgs84.latlon(image["TPlat"], image["TPlon"],
                                                        elevation_m=0).at(current_ts).position.m)
@@ -131,8 +135,27 @@ class Grid(ABC):
     #     pass
 
     def verify(self, metadata, processes=1):
-        _ = multiprocess(self.calc_los_image, metadata, self.fwdm_vars, processes, [])
-        logging.info("Grid built and verified!")
+        minmax = np.stack([np.full((2,), centers[int(len(centers) / 2.0)]) for centers in self.centers])
+        gridl = np.stack([np.array([edges[0], edges[-1]]) for edges in self.edges])
+
+        ndims = len(self.centers)
+
+        pos = multiprocess(self.calc_los_image, metadata, self.fwdm_vars, processes, [])
+        for los in unnest(pos):
+            minmax[:, 0] = [np.minimum(minmax[i, 0], np.min(los[:, i])) for i in range(ndims)]
+            minmax[:, 1] = [np.maximum(minmax[i, 1], np.max(los[:, i])) for i in range(ndims)]
+
+        minmax, gridl = [(arr - self.offsets[:, np.newaxis]) / self.scalings[:, np.newaxis] for arr in [minmax, gridl]]
+        logging.info("Grid verification:")
+        for i in range(ndims):
+            logging.info(f"Dimension {i}: grid {gridl[i, 0]:.3e} to {gridl[i, 1]:.3e}," +
+                        f" los {minmax[i, 0]:.3e} to {minmax[i, 1]:.3e}.")
+
+        OK = all([np.logical_and(minmax[i, 0] > gridl[i, 0], minmax[i, 1] < gridl[i, 1]) for i in range(ndims)])
+        if OK:
+            logging.info("Grid built and verified!")
+        else:
+            raise ValueError("LOS outside grid found! Abort")
 
     def vec2atm(self, vec):
         return [vec[i * self.all_points:(i + 1) * self.all_points].reshape(self.atm_shape[1:]) * self.scales[i]
@@ -170,9 +193,11 @@ class Grid(ABC):
         first = 0
         mid = int((data["size"] - 1) / 2)
         last = data["size"] - 1
+        center_row, center_col = [int(np.round(data[var][0] / 2.0)) for var in ["NROW", "NCOL"]]
 
-        posecef_first, posecef_mid, posecef_last = [data["afsTangentPointECEF"][idx, :3] for idx in [first, mid, last]]
-
+        # posecef_first, posecef_mid, posecef_last = [data["afsTangentPointECEF"][idx, :3] for idx in [first, mid, last]]
+        posecef_first, posecef_mid, posecef_last = [np.array([data[f"TPECEF{c}"][idx, center_row, center_col]
+                                                              for c in ['x', 'y', 'z']]) for idx in [first, mid, last]]
         observation_normal = np.cross(posecef_first, posecef_last)
         observation_normal = observation_normal / np.linalg.norm(observation_normal)  # normalize vector
 
@@ -194,6 +219,37 @@ class Grid(ABC):
         distance_top_1 = (-b - root) / 2
         distance_top_2 = (-b + root) / 2
         return [distance_top_1, distance_top_2]
+
+    def _set_edges(self, name, conf, const, lims, scaling=1.0, offset=0.0):
+        spec = getattr(conf, name, None)
+        if (type(spec) is not dict) or ("method" not in spec.keys()):
+            raise ValueError(f"Configuration variable {name} must be a dictionary with a 'method' key!")
+
+        use_lims = not spec["ignore_lims"] if "ignore_lims" in spec.keys() else True
+
+        if spec["method"] == "fill_lims":
+            assert use_lims, "Cannot ignore limits with 'fill_lims' grid specification method!"
+            coord = np.linspace(lims[0], lims[1], int(spec["num_points"]))
+        elif spec["method"] == "array":
+            coord = spec["array"]
+        elif spec["method"] == "intervals":
+            assert type(spec.get("intervals")) is list and all([len(x) == 3 for x in spec["intervals"]]), \
+                "Malformed 'intervals' spec for conf. variable {name}!"
+            coord = np.concatenate([np.arange(*intv) for intv in spec["intervals"]])
+        elif spec["method"] == "auto_along":
+            nlc_pad = 2 * spec.get("nlc_img_pad", 0.0) * np.mean(np.diff(self.img_time))
+            tomo_len = const.sat_speed_approx * (self.img_time[-1] - self.img_time[0] - nlc_pad)
+            full_grid_hlen = tomo_len / 2 + spec["full_grid_pad"]
+            hgrid = np.arange(0, full_grid_hlen + spec["full_grid_step"], spec["full_grid_step"])
+            hgrid = np.concatenate([hgrid, hgrid[-1] + spec["grid_tail"]])
+            coord = np.sort(np.unique(np.concatenate([-1.0 * hgrid, hgrid])))
+        else:
+            raise ValueError(f"Invalid 'method' value in configuration variable {name}!")
+
+        coord = scaling * coord + offset
+        if use_lims:
+            coord = coord[np.logical_and(coord > lims[0], coord < lims[1])]
+        return coord
 
 
 class Rad_along_3D_grid(Grid):
@@ -243,7 +299,7 @@ class Rad_along_3D_grid(Grid):
         mid = int((data["size"] - 1) / 2)
         last = data["size"] - 1
 
-        mid_date = data['EXPDate'][mid]
+        mid_date = data['time'][mid]
         current_ts = self.timescale.from_datetime(mid_date)
         localR = np.linalg.norm(sfapi.wgs84.latlon(data["TPlat"][mid], data["TPlon"][mid],
                                                    elevation_m=0).at(current_ts).position.m)
@@ -269,7 +325,7 @@ class Rad_along_3D_grid(Grid):
         irow = self.rows[0]
         poslocal_sph = []
 
-        get_los_vars = ['channel', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'EXPDate', 'TPlat', 'TPlon']
+        get_los_vars = ['channel', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'time', 'TPlat', 'TPlon']
         # Which localR to use in get_step_local_grid?
         for idx in [first, mid, last]:
             image = get_image(data, idx, get_los_vars)
@@ -311,7 +367,7 @@ class Rad_along_3D_grid(Grid):
 
     # def _get_steps_in_local_grid(self, image, satpos_ecef, los_ecef, localR=None):
     #    if localR is None:
-    #        date = image['EXPDate']
+    #        date = image['time']
     #        current_ts = self.timescale.from_datetime(date)
     #        localR = np.linalg.norm(sfapi.wgs84.latlon(image["TPlat"], image["TPlon"],
     #                                                   elevation_m=0).at(current_ts).position.m)

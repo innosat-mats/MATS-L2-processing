@@ -6,8 +6,8 @@ def make_conf(conf_type, conf_file, args):
 
     # Variables groups used in multiple configurations
     CCD_VARS = ['channel', 'NCSKIP', 'NRBIN', 'NCOL', 'NRSKIP', 'NROW', 'NCBINCCDColumns', "TEXPMS"]
-    ATT_VARS = ["afsAttitudeState", "qprime", 'afsGnssStateJ2000', "EXPDate"]
-    TP_VARS = ["TPlat", "TPlon", 'afsTangentPointECEF']
+    ATT_VARS = ["afsAttitudeState", "qprime", 'afsGnssStateJ2000', "time"]
+    TP_VARS = ["TPlat", "TPlon", "TPECEFx", "TPECEFy", "TPECEFz"]
     GEN_RET_VARS = ['START_TIME', 'STOP_TIME', 'CHANNELS', "SA_WEIGHTS", "RET_QTY", "AUX_QTY", "EPSILON_WEIGHTS",
                     "TP_ALT_RANGE", "SCALES", "BOUNDS", "RAD_SCALE", "INTERPOLATOR", "RET_ALT_RANGE", "CG_ATOL",
                     "CG_RTOL", "CG_MAX_STEPS", "TOP_ALT", "STEP_SIZE", "COL_RANGE", "ROW_RANGE", "RT_DATA_FILE",
@@ -25,12 +25,15 @@ def make_conf(conf_type, conf_file, args):
              "VER": ("Volume emission rate", "ph/cm^3/s"),
              "T": ("Temperature", "K")}
 
+    # Various approximate constants for simple estimations needed in the code
+    SAT_SPEED_APPROX = 7.55  # km/s
+
     # Configuration for temperature iterative solver
     const["iter_T"] = {"NEEDED_DATA": CCD_VARS + ATT_VARS + TP_VARS, "TP_VARS": CCD_VARS + ATT_VARS, "ncpar": ncpar,
-                       "POINTING_DATA": ATT_VARS + CCD_VARS}
+                       "POINTING_DATA": ATT_VARS + CCD_VARS, "sat_speed_approx": SAT_SPEED_APPROX}
     req["iter_T"] = ['ALT_GRID', 'ALONG_GRID', 'ACROSS_GRID', "ASPECT_RATIO", "SEP_CHN_LOS", "OBS_SRC_VAR",
                      "DISTORTION_CORRECTION", "DISTORTION_DATA", "GEOLOCATE_1D_FROM_TP"] + \
-        APR_1D_VARS + GEN_RET_VARS + LM_VARS
+        GEN_RET_VARS + LM_VARS
 
     # Configuration for linear
     const["linear_1D"] = const["iter_T"].copy()
@@ -61,7 +64,7 @@ def make_conf(conf_type, conf_file, args):
     req["heights"] = ["DISTORTION_CORRECTION", "DISTORTION_DATA", "PLANET_FILE"]
     const["heights"] = {"POINTING_DATA": ATT_VARS + CCD_VARS, "ncpar": ncpar}
     # const["heights"]["POINTING_DATA"].remove("CCDSEL")
-    # const["heights"]["POINTING_DATA"].remove("EXPDate")
+    # const["heights"]["POINTING_DATA"].remove("time")
 
     # Default values for all of the above
     defaults = {"SA_WEIGHTS_1D_APR": [1e-1, 1e3],

@@ -21,7 +21,7 @@ class Obs(ABC):
 
         self.TP_heights_vars = const.TP_VARS
         self.fwdm_vars = const.NEEDED_DATA
-        # self.img_time = metadata["EXPDate_s"]
+        # self.img_time = metadata["time_s"]
         self.num_simages = metadata[0]['size']
 
         self.TP_heights = self._calc_tp_heights(metadata, processes)
@@ -53,7 +53,7 @@ class Obs(ABC):
         for i, chn in enumerate(self.channels):
             cvar = conf.OBS_SRC_VAR[chn]
             meta_idx = i if conf.SEP_CHN_LOS else 0
-            tlim = [seconds2DT(self.metadata[meta_idx]["EXPDate_s"][idx] + offset)
+            tlim = [seconds2DT(self.metadata[meta_idx]["time_s"][idx] + offset)
                     for idx, offset in [(0, -0.1), (-1, 0.1)]]
             data = read_L1_ncdf(ifiles[meta_idx], start_time=tlim[0], stop_time=tlim[1], var=[cvar])
             obs_data[i, ...] = conf.NCDF_OBS_FACTOR * np.transpose(data[cvar][:, idxs[0], idxs[1]], axes=(0, 2, 1))

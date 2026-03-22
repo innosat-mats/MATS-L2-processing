@@ -88,6 +88,11 @@ def center_grid(grid):
     return (grid[:-1] + grid[1:]) / 2
 
 
+def unnest(nested_list):
+    return chain.from_iterable(unnest(item) if isinstance(item, list) else [item]
+                               for item in nested_list)
+
+
 def print_times(times, titles):
     assert len(titles) + 1 == len(times)
     res = ""

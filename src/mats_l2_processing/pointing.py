@@ -48,7 +48,7 @@ def sparse_tp_data(image, deg_map, nx=5, ny=10):
     else:
         xpixels = np.array([int(np.floor(image['NCOL'] / 2))])
     ypixels = np.append(np.arange(0, image['NROW'] - 1, ny), image["NROW"] - 1)
-    t = load.timescale().from_datetime(image['EXPDate'])
+    t = load.timescale().from_datetime(image['time'])
     ecipos = image['afsGnssStateJ2000'][0:3]
     quat = R.from_quat(np.roll(image['afsAttitudeState'], -1))
     qprime = R.from_quat(image['qprime'])
@@ -102,8 +102,8 @@ def TP_data(image, pointing, var, ny=10, cols=None, rows=None, planets_file=None
 
     if len(set(var) & set(["lon", "lat", "sza"])) > 0:
         timescale = load.timescale()
-        t = timescale.from_datetime(image["EXPDate"])
-        # dt = seconds2DT(image["EXPDate"])
+        t = timescale.from_datetime(image["time"])
+        # dt = seconds2DT(image["time"])
         eci2ecef = R.from_matrix(itrs.rotation_at(t))
         TPwgs = [x.reshape(TPheights.shape) for x in ecef2wgs84(eci2ecef.apply(TPpos.reshape(-1, 3)))]
         on_ref_grid["lat"], on_ref_grid["lon"] = [np.rad2deg(TPwgs[i]) for i in range(2)]
@@ -127,7 +127,7 @@ def TP_data(image, pointing, var, ny=10, cols=None, rows=None, planets_file=None
 def col_heights(image, x, pointing, ypixels=None, spline=False, splineTPpos=False):
     if ypixels is None:
         ypixels = np.arrange(image["NROW"])
-    d = image['EXPDate']
+    d = image['time']
     ts = load.timescale()
     t = ts.from_datetime(d)
     ecipos = image['afsGnssStateJ2000'][0:3]

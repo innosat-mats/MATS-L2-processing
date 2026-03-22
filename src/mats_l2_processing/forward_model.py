@@ -220,8 +220,8 @@ class Forward_model(ABC):
 
 
 class Forward_model_temp_abs(Forward_model):
-    def __init__(self, conf, const, grid, metadata, aux, rt_data, combine_images=False):
-        super().__init__(conf, const, grid, metadata, aux, combine_images=combine_images)
+    def __init__(self, conf, const, grid, obs, aux, rt_data, combine_images=False):
+        super().__init__(conf, const, grid, obs, aux, combine_images=combine_images)
         self.ver_id, self.t_id, self.o2_id = [self._get_qty_id(qty) for qty in ["VER", "T", "O2"]]
         if self.o2_id[0] == 0:
             raise ValueError("This forward model cannot retrieve O2 density, check your conf!")
@@ -270,3 +270,19 @@ class Forward_model_temp_abs(Forward_model):
         del sigmas
         path_tau_em = self.rt_data["filters"] @ (exp_tau * emissions)
         return np.sum(path_tau_em * pathVER, axis=1)
+
+
+class Forward_model_basic_lin(Forward_model):
+    def __init__(self, conf, const, grid, obs, combine_images=False):
+        super().__init__(conf, const, grid, obs, [], combine_images=combine_images)
+        self.ver_id = self._get_qty_id("VER")
+        self.factor = (self.stepsize / 4 / np.pi * 1e6)
+
+    def _fwdm_los(self, pos, atm, _):
+        pathVER, _ = self.interp.interpolate(pos, atm[self.ver_id[1]])
+        return [np.sum(pathVER) * self.factor]
+
+    def _fwdm_jac_los(self, pos, atm, _):
+        pathVER, pWeights = self.interp.interpolate(pos, [atm[self.ver_id[1]]])
+        grads = [self.interp.grad_path2grid(np.full((1, len(pathVER)), self.factor), pWeights)]
+        return [np.sum(pathVER) * self.factor], grads

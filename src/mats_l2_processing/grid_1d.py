@@ -25,8 +25,12 @@ class Alt_1D_stacked_grid(Grid):
         lims = self.grid_limits(metadata)
         print(f"Grid limits: {lims}")
         # lims = (0, 1e8)
-        grid_proto = make_grid_proto(conf.ALT_GRID, scaling=1e3)
-        self.edges = [grid_from_proto(grid_proto, lims)]
+        self.scalings = np.array([1e3])
+        self.offsets = np.zeros(1)
+        self.edges = [self._set_edges("ALT_GRID", conf, const, lims[0],
+                                      scaling=self.scalings[0], offset=self.offsets[0])]
+        # grid_proto = make_grid_proto(conf.ALT_GRID, scaling=1e3)
+        # self.edges = [grid_from_proto(grid_proto, lims)]
 
         # Set derived attributes
         self._set_derived(metadata, processes, False, verify)
@@ -43,7 +47,7 @@ class Alt_1D_stacked_grid(Grid):
     def grid_limits(self, data):
         mid = int((data["size"] - 1) / 2)
 
-        mid_date = data['EXPDate'][mid]
+        mid_date = data['time'][mid]
         current_ts = self.timescale.from_datetime(mid_date)
 
         # Rotation between satellite pointing and channel pointing
@@ -56,7 +60,7 @@ class Alt_1D_stacked_grid(Grid):
         satpos_eci = data['afsGnssStateJ2000'][mid, 0:3]
         satpos_ecef = eci_to_ecef.apply(satpos_eci)
 
-        get_los_vars = ['channel', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'EXPDate', 'TPlat', 'TPlon']
+        get_los_vars = ['channel', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'time', 'TPlat', 'TPlon']
         im_min, im_max = [], []
         for idx in range(data["size"]):
             for row in [self.rows[0], self.rows[-1]]:

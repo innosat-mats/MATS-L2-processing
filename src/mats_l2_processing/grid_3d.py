@@ -22,10 +22,10 @@ class Alt_along_3D_grid(Grid):
         ref_rad = self.local_geoid_radius + self.ref_alt
         # self.edges = self._generate_grid(metadata, conf)
         lims = self.grid_limits(metadata)
-        grid_proto = [make_grid_proto(conf.ALT_GRID, scaling=1e3),
-                      make_grid_proto(conf.ACROSS_GRID, scaling=1e3 / ref_rad),
-                      make_grid_proto(conf.ALONG_GRID, scaling=1e3 / ref_rad)]
-        self.edges = [grid_from_proto(p, l) for p, l in zip(grid_proto, lims)]
+        self.scalings = np.array([1e3, 1e3 / ref_rad, 1e3 / ref_rad])
+        self.offsets = np.zeros(3)
+        self.edges = [self._set_edges(name, conf, const, lims[i], scaling=self.scalings[i], offset=self.offsets[i])
+                      for i, name in enumerate(["ALT_GRID", "ACROSS_GRID", "ALONG_GRID"])]
         # Set derived attributes
         self._set_derived(metadata, processes, True, verify)
 
@@ -38,7 +38,7 @@ class Alt_along_3D_grid(Grid):
         mid = int((data["size"] - 1) / 2)
         last = data["size"] - 1
 
-        mid_date = data['EXPDate'][mid]
+        mid_date = data['time'][mid]
         current_ts = self.timescale.from_datetime(mid_date)
         localR = np.linalg.norm(sfapi.wgs84.latlon(data["TPlat"][mid], data["TPlon"][mid],
                                                    elevation_m=0).at(current_ts).position.m)
@@ -64,7 +64,7 @@ class Alt_along_3D_grid(Grid):
         irow = self.rows[0]
         poslocal_sph = []
 
-        get_los_vars = ['channel', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'EXPDate', 'TPlat', 'TPlon']
+        get_los_vars = ['channel', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'time', 'TPlat', 'TPlon']
         # Which localR to use in get_step_local_grid?
         for idx in [first, mid, last]:
             image = get_image(data, idx, get_los_vars)
@@ -101,7 +101,7 @@ class Alt_along_3D_grid(Grid):
         if (nalong - 2) < 2:
             nalong = 2
 
-        return (min_alt - 10e3, self.top_alt + 10e3, nalt), (min_across - 0.1, max_across + 0.1, nacross), \
+        return (min_alt - 5e3, self.top_alt + 5e3, nalt), (min_across - 0.1, max_across + 0.1, nacross), \
             (min_along - 0.6, max_along + 0.6, nalong)
 
     def _get_steps_in_own_grid_simple(self, pos):

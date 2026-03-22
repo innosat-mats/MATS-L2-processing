@@ -2,7 +2,7 @@ import sys
 import numpy as np
 import netCDF4 as nc
 
-from mats_l2_processing.obs import time_offsets, cross_maps, reinterpolate3, remove_background_ds
+from mats_l2_processing.obs_preprocessing import time_offsets, cross_maps, reinterpolate3, remove_background_ds
 from mats_l2_processing.io import read_multi_ncdf, add_ncdf_vars
 from mats_l2_processing.parameters import make_conf
 from mats_l2_processing.pointing import Pointing

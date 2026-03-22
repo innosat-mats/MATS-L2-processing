@@ -81,6 +81,7 @@ class Trilinear_interpolator_3D(Interpolator):
         coords, dists, iw = np.zeros((num_pos, 8, 3), dtype=int), np.zeros((num_pos, 3, 2)), np.zeros((num_pos, 8))
         dists[:, :, 1] = np.stack([pos[:, i] - self.edges[i][coords0[:, i]] for i in range(3)], axis=-1)
         dists[:, :, 0] = np.stack([self.edges[i][coords0[:, i] + 1] - pos[:, i] for i in range(3)], axis=-1)
+        breakpoint()
 
         idata = np.stack(data, axis=0)
         res = np.zeros((len(data), num_pos))

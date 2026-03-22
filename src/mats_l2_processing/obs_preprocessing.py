@@ -68,7 +68,7 @@ def cross_maps(data, image_vars, deg_maps):
 
 def reinterpolate(data, deg_maps, cm):
     assert len(deg_maps) == cm.shape[0]
-    numimgs = [len(data[i]["EXPDate"]) for i in range(len(data))]
+    numimgs = [len(data[i]["time"]) for i in range(len(data))]
     numimg = min(numimgs)
     numchn = len(numimgs)
     res = np.zeros((len(deg_maps) - 1, numimg, deg_maps[0].shape[1],
@@ -85,7 +85,7 @@ def reinterpolate(data, deg_maps, cm):
 
 def reinterpolate2(data, deg_maps, cm, destray=[]):
     assert len(deg_maps) == cm.shape[0]
-    numimgs = [len(data[i]["EXPDate"]) for i in range(len(data))]
+    numimgs = [len(data[i]["time"]) for i in range(len(data))]
     numimg = min(numimgs)
     numchn = len(numimgs)
     if len(destray) == 0:
@@ -111,7 +111,7 @@ def reinterpolate2(data, deg_maps, cm, destray=[]):
 
 def reinterpolate3(data, deg_maps, cm, destray=[]):
     assert len(deg_maps) == cm.shape[0]
-    numimgs = [len(data[i]["EXPDate"]) for i in range(len(data))]
+    numimgs = [len(data[i]["time"]) for i in range(len(data))]
     numimg = min(numimgs)
     numchn = len(numimgs)
     if len(destray) == 0:
