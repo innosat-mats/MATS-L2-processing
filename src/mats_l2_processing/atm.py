@@ -56,7 +56,7 @@ class gridded_data():
             raise ValueError("gridded_data requires either grid or L2 ncdf file for initialization!")
         self.data = extend_previous.copy()
         if from_grid is not None:
-            self.centers = from_grid.centers
+            self.points = from_grid.points
             self.alt = from_grid.alt
             self.lat = from_grid.lat
             self.lon = from_grid.lon
@@ -67,7 +67,7 @@ class gridded_data():
                 self.lat = nf["lat"][:]
                 self.lon = nf["lon"][:]
                 self.valid_time = nf["time"][0]
-                self.centers = [nf[coord_name][:] for coord_name in nf["alt"].dimensions]
+                self.points = [nf[coord_name][:] for coord_name in nf["alt"].dimensions]
                 self.ncdf_file = from_L2_ncdf
                 for var in ncdf_preload:
                     self.data[var] = nf[var][:]
@@ -189,7 +189,7 @@ class gridded_data():
         if gargs["reference"] == "local":
             return [qty * factor for qty in gargs["input"]]
         elif gargs["reference"] == "boundary":  # TODO: fix for other grids!
-            boundary_idx = np.argmin(np.abs(self.centers[0] - gargs["boundary_alt"]))
+            boundary_idx = np.argmin(np.abs(self.points[0] - gargs["boundary_alt"]))
             return [np.where(exponent < 0, self.data[qty][boundary_idx, :, :][np.newaxis, :, :] * factor,
                              self.data[qty]) for qty in gargs["input"]]
         else:

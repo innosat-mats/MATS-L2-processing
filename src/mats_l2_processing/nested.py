@@ -40,7 +40,7 @@ def nested_VER_1D(conf, const, metadata, obs_files, rt_data, prefix, processes=1
 
     # Setup inverse model
     obs_data = obs.prepare_obs_data(conf_1d, obs_files)
-    Sa_inv, terms = Sa_inv_multivariate((grid.centers), conf.SA_WEIGHTS_1D_APR, volume_factors=True,
+    Sa_inv, terms = Sa_inv_multivariate((grid.points), conf.SA_WEIGHTS_1D_APR, volume_factors=True,
                                         store_terms=False, var_scales=None)
     num_im_obs = len(grid.rows) * len(conf_1d.CHANNELS)
     Se_inv = sp.diags(np.ones(num_im_obs), 0).astype('float32') / (conf.RAD_SCALE ** 2 * num_im_obs)
@@ -75,29 +75,29 @@ def get_alongtrack_coord(ecef_to_local, tp_lat, tp_lon):
 
 
 def init_3D_from_1D(grid_3d, grid_1d, ver_1d, metadata):
-    assert all(grid_3d.centers[0] == grid_1d.centers[0])
+    assert all(grid_3d.points[0] == grid_1d.points[0])
     assert ver_1d.shape[0] == grid_1d.atm_shape[1]
-    alt_grid = grid_3d.centers[0]
+    alt_grid = grid_3d.points[0]
 
     along_coord, _ = get_alongtrack_coord(grid_3d.ecef_to_local, metadata["TPlat"], metadata["TPlon"])
-    shifts = hor_shifts_1D(grid_1d.centers[0], metadata["TPlat"], metadata["afsGnssStateJ2000"],
+    shifts = hor_shifts_1D(grid_1d.points[0], metadata["TPlat"], metadata["afsGnssStateJ2000"],
                            ref_alt=grid_1d.ref_alt)
     alongg = along_coord[np.newaxis, :] + shifts
 
     # talongg, tshifts, talong_coord = [x * 6450 for x in [alongg, shifts, along_coord]]
     # breakpoint()
-    res = np.nan * np.ones((len(alt_grid), len(grid_3d.centers[2])))
+    res = np.nan * np.ones((len(alt_grid), len(grid_3d.points[2])))
     for i, alt in enumerate(alt_grid):
         interp = interp1d(alongg[i, :], ver_1d[:, i], fill_value=(ver_1d[0, i], ver_1d[-1, i]),
                           bounds_error=False)
-        res[i, :] = interp(grid_3d.centers[2])
+        res[i, :] = interp(grid_3d.points[2])
 
-    return np.broadcast_to(res[:, np.newaxis, :], tuple([len(x) for x in grid_3d.centers]))
+    return np.broadcast_to(res[:, np.newaxis, :], tuple([len(x) for x in grid_3d.points]))
 
 
 def compensate_curvature(grid, metadata, qtys):
     along, across = get_alongtrack_coord(grid.ecef_to_local, metadata["tp_lat"], metadata["tp_lon"])
     interp = interp1d(along, across, fillvalue=(across[0], across[-1]))
-    ang_cor = - interp(grid.centers[2])
-    shifts = np.broadcast_tp(ang_cor[np.newaxis, :], (len(grid.centers[0]), len(grid.centers[2])))
+    ang_cor = - interp(grid.points[2])
+    shifts = np.broadcast_tp(ang_cor[np.newaxis, :], (len(grid.points[0]), len(grid.points[2])))
     return [array_shifts[qty, shifts, 1] for qty in qtys]

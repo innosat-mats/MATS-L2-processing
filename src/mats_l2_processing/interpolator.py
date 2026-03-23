@@ -6,8 +6,8 @@ from scipy.sparse import coo_matrix
 
 class Interpolator(ABC):
     def __init__(self, grid):
-        self.edges = grid.edges
-        self.shape = [len(c) for c in grid.centers]
+        self.points = grid.points
+        self.shape = [len(c) for c in self.points]
         self.numpoints = np.prod(self.shape)
         self.coord_factors = [np.prod(self.shape[j + 1:]) for j in range(len(self.shape) - 1)] + [1]
         # self.shape = grid.atm_shape[1:]
@@ -76,12 +76,11 @@ class Trilinear_interpolator_3D(Interpolator):
 
     def interpolate(self, pos, data):
         num_pos = pos.shape[0]
-        coords0 = np.stack([np.searchsorted(self.edges[i], pos[:, i], sorter=None) - 1 for i in range(3)], axis=-1)
+        coords0 = np.stack([np.searchsorted(self.points[i], pos[:, i], sorter=None) - 1 for i in range(3)], axis=-1)
 
         coords, dists, iw = np.zeros((num_pos, 8, 3), dtype=int), np.zeros((num_pos, 3, 2)), np.zeros((num_pos, 8))
-        dists[:, :, 1] = np.stack([pos[:, i] - self.edges[i][coords0[:, i]] for i in range(3)], axis=-1)
-        dists[:, :, 0] = np.stack([self.edges[i][coords0[:, i] + 1] - pos[:, i] for i in range(3)], axis=-1)
-        breakpoint()
+        dists[:, :, 1] = np.stack([pos[:, i] - self.points[i][coords0[:, i]] for i in range(3)], axis=-1)
+        dists[:, :, 0] = np.stack([self.points[i][coords0[:, i] + 1] - pos[:, i] for i in range(3)], axis=-1)
 
         idata = np.stack(data, axis=0)
         res = np.zeros((len(data), num_pos))
@@ -113,13 +112,13 @@ class Linear_interpolator_1D(Interpolator):
     def interpolate(self, pos, data):
         num_pos = len(pos)
         coords, iw, res = np.empty((num_pos, 2), dtype=int), np.zeros((num_pos, 2)), np.zeros((len(data), num_pos))
-        coords[:, 1] = np.searchsorted(self.edges[0], pos, sorter=None)
+        coords[:, 1] = np.searchsorted(self.points[0], pos, sorter=None)
         coords[:, 0] = coords[:, 1] - 1
-        iw[:, 1] = pos - self.edges[0][coords[:, 0]]
-        iw[:, 0] = self.edges[0][coords[:, 1]] - pos
+        iw[:, 1] = pos - self.points[0][coords[:, 0]]
+        iw[:, 0] = self.points[0][coords[:, 1]] - pos
 
         for j, dat in enumerate(data):
             res[j, :] += iw[:, 0] * data[j][coords[:, 0]] + iw[:, 1] * data[j][coords[:, 1]]
-        dists = self.edges[0][coords[:, 1]] - self.edges[0][coords[:, 0]]
+        dists = self.points[0][coords[:, 1]] - self.points[0][coords[:, 0]]
         res /= dists[np.newaxis, :]
         return *[res[i, :] for i in range(len(data))], (coords, iw / dists[:, np.newaxis])

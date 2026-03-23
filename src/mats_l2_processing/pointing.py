@@ -137,7 +137,6 @@ def col_heights(image, x, pointing, ypixels=None, spline=False, splineTPpos=Fals
     ths = np.zeros_like(ypixels)
     TPpos = np.zeros((len(ypixels), 3))
     xdeg, ydeg = pointing.get_deg_map(image)[:, x, ypixels]
-    breakpoint()
     for iy, y in enumerate(ydeg):
         los = R.from_euler('XYZ', [0, y, xdeg], degrees=True).apply([1, 0, 0])
         ecivec = quat.apply(qprime.apply(los))

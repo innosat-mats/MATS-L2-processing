@@ -24,13 +24,13 @@ class Alt_along_3D_grid(Grid):
         lims = self.grid_limits(metadata)
         self.scalings = np.array([1e3, 1e3 / ref_rad, 1e3 / ref_rad])
         self.offsets = np.zeros(3)
-        self.edges = [self._set_edges(name, conf, const, lims[i], scaling=self.scalings[i], offset=self.offsets[i])
-                      for i, name in enumerate(["ALT_GRID", "ACROSS_GRID", "ALONG_GRID"])]
+        self.points = [self._set_points(name, conf, const, lims[i], scaling=self.scalings[i], offset=self.offsets[i])
+                       for i, name in enumerate(["ALT_GRID", "ACROSS_GRID", "ALONG_GRID"])]
         # Set derived attributes
         self._set_derived(metadata, processes, True, verify)
 
         # Set geolocation attributes
-        self.alt = np.broadcast_to(self.centers[0][:, np.newaxis, np.newaxis], self.atm_shape[1:])
+        self.alt = np.broadcast_to(self.points[0][:, np.newaxis, np.newaxis], self.atm_shape[1:])
         self.lat, self.lon = self.get_lat_lon()
 
     def grid_limits(self, data):
@@ -119,7 +119,7 @@ class Alt_along_3D_grid(Grid):
         return poslocal_sph
 
     def get_lat_lon(self):
-        acrr, alongg = np.meshgrid(*self.centers[1:], indexing="ij")
+        acrr, alongg = np.meshgrid(*self.points[1:], indexing="ij")
         # Cartesian unit vectors in directions of horizontal slice of local grid
         lxx, lyy, lzz = sph2cart(np.ones_like(acrr), acrr, alongg)
         glgrid = self.ecef_to_local.inv().apply(np.dstack((lxx.flatten(), lyy.flatten(), lzz.flatten()))[0, :, :])
@@ -130,12 +130,12 @@ class Alt_along_3D_grid(Grid):
 
     def write_grid_ncdf(self, fname, attributes={}):
         # Define dimensions
-        eff_radius = self.local_geoid_radius + np.mean(self.centers[0])
-        dim_pars = {"alt_coord": ("Altitude", "meter", self.centers[0]),
+        eff_radius = self.local_geoid_radius + np.mean(self.points[0])
+        dim_pars = {"alt_coord": ("Altitude", "meter", self.points[0]),
                     "acrosstrack_coord": ("Horizontal coordinate in the direction perpendicular to the orbital plane",
-                                          "meter", self.centers[1] * eff_radius),
+                                          "meter", self.points[1] * eff_radius),
                     "alongtrack_coord": ("Horizontal coordinate in the direction of the satellite track", "meter",
-                                         self.centers[2] * eff_radius),
+                                         self.points[2] * eff_radius),
                     "img_time": ("Acquisition time of individual MATS images", "Seconds since 2000.01.01 00:00 UTC",
                                  self.img_time),
                     "img_col": ("Column of (coadded) pixels in the image", None, self.columns),
@@ -143,7 +143,7 @@ class Alt_along_3D_grid(Grid):
                     "time": ("Valid time of L2 data", "Seconds since 2000.01.01 00:00 UTC",
                              self.valid_time * np.ones(1))}
         dims_4D = ("time", "alt_coord", "acrosstrack_coord", "alongtrack_coord")
-        #dims_2D = ("acrosstrack_coord", "alongtrack_coord")
+        # dims_2D = ("acrosstrack_coord", "alongtrack_coord")
 
         # Define coordinate variables
         ncvars = {"altitude": ("Altitude", "meter", self.alt, dims_4D),  # For compatibility with old scripts

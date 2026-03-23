@@ -22,7 +22,7 @@ class Forward_model(ABC):
                 "has shape {aux[i].shape}, but grid is of shape {grid.atm_shape[1:]}"
         self.aux = aux
 
-        ndims = len(grid.edges)
+        ndims = len(grid.points)
         self.sparse = (ndims > 1)
         if self.sparse:
             self.valid_row = Forward_model.valid_row_sparse

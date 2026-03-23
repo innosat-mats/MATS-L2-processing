@@ -94,8 +94,8 @@ def main():
     logging.info("Initializing inverse model...")
     obs_data = obs.prepare_obs_data(conf, obs_files)
     local_earth_radius = geoid_radius(np.deg2rad(np.mean(metadata[0]['TPlat'])))
-    Sa_inv, terms = Sa_inv_multivariate((grid.centers[0], grid.centers[1] * local_earth_radius,
-                                         grid.centers[2] * local_earth_radius), conf.SA_WEIGHTS, volume_factors=True,
+    Sa_inv, terms = Sa_inv_multivariate((grid.points[0], grid.points[1] * local_earth_radius,
+                                         grid.points[2] * local_earth_radius), conf.SA_WEIGHTS, volume_factors=True,
                                         store_terms=(not args.no_reg_analysis), aspect_ratio=conf.ASPECT_RATIO,
                                         var_scales=None)
 

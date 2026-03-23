@@ -27,8 +27,8 @@ class Alt_1D_stacked_grid(Grid):
         # lims = (0, 1e8)
         self.scalings = np.array([1e3])
         self.offsets = np.zeros(1)
-        self.edges = [self._set_edges("ALT_GRID", conf, const, lims[0],
-                                      scaling=self.scalings[0], offset=self.offsets[0])]
+        self.points = [self._set_points("ALT_GRID", conf, const, lims[0],
+                                        scaling=self.scalings[0], offset=self.offsets[0])]
         # grid_proto = make_grid_proto(conf.ALT_GRID, scaling=1e3)
         # self.edges = [grid_from_proto(grid_proto, lims)]
 
@@ -36,7 +36,7 @@ class Alt_1D_stacked_grid(Grid):
         self._set_derived(metadata, processes, False, verify)
 
         # Set geolocation attributes
-        self.alt = np.broadcast_to(self.centers[0][np.newaxis, :], self.atm_shape[1:])
+        self.alt = np.broadcast_to(self.points[0][np.newaxis, :], self.atm_shape[1:])
 
         if conf.GEOLOCATE_1D_FROM_TP:
             self.lat, self.lon = self._get_lat_lon(metadata)
@@ -81,7 +81,7 @@ class Alt_1D_stacked_grid(Grid):
     def write_grid_ncdf(self, fname, attributes={}):
         # Define dimensions
         # eff_radius = self.local_geoid_radius + np.mean(self.centers[0])
-        dim_pars = {"alt_coord": ("Altitude", "meter", self.centers[0]),
+        dim_pars = {"alt_coord": ("Altitude", "meter", self.points[0]),
                     "img_time": ("Acquisition time of individual MATS images", "Seconds since 2000.01.01 00:00 UTC",
                                  self.img_time),
                     "img_col": ("Column of (coadded) pixels in the image", None, self.columns),
@@ -116,9 +116,9 @@ class Alt_1D_stacked_grid(Grid):
         tpr, tplon, tplat = [arr.reshape(shape) for arr in cart2sph(tp_ecef)]
         tpalt = tpr - geoid_radius(tplat)
 
-        lon, lat = [np.zeros((shape[0], len(self.centers[0]))) for _ in range(2)]
+        lon, lat = [np.zeros((shape[0], len(self.points[0]))) for _ in range(2)]
         for im in range(shape[0]):
-            lat[im, :], lon[im, :] = [np.interp(self.centers[0], tpalt[im, :], arr[im, :])
+            lat[im, :], lon[im, :] = [np.interp(self.points[0], tpalt[im, :], arr[im, :])
                                       for arr in [tplat, tplon]]
         return np.rad2deg(lat), np.rad2deg(lon)
 
