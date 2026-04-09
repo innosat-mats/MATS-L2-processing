@@ -228,6 +228,7 @@ class Forward_model_temp_abs(Forward_model):
         self.rt_data = rt_data
         self.startT = np.linspace(100, 600, 501)
         self.Tstep = self.startT[1] - self.startT[0]
+        self.factor = self.stepsize / 4 / np.pi * 1e6
 
     def _interp_T(self, vals, tables):
         ix = np.array(np.floor((vals - self.startT[0]) / self.Tstep), dtype=int)
@@ -241,7 +242,7 @@ class Forward_model_temp_abs(Forward_model):
                                                                          [self.ver_id, self.t_id, self.o2_id]])
         sigmas, sigmas_pTgrad, emissions, emissions_pTgrad = self._interp_T(pathT, [self.rt_data[name] for name in
                                                              ["sigma", "sigma_grad", "emission", "emission_grad"]])
-        exp_tau = np.exp(-(sigmas * patho2).cumsum(axis=1) * self.stepsize * 1e2) * (self.stepsize / 4 / np.pi * 1e6)
+        exp_tau = np.exp(-(sigmas * patho2).cumsum(axis=1) * self.stepsize * 1e2) * self.factor
         del sigmas
 
         if not self.t_id[0]:  # if retrieving temperature
@@ -266,7 +267,7 @@ class Forward_model_temp_abs(Forward_model):
         pathVER, pathT, patho2, pWeights = self.interp.interpolate(pos, [[atm, aux][idx[0]][idx[1]] for idx in
                                                                          [self.ver_id, self.t_id, self.o2_id]])
         sigmas, emissions = self._interp_T(pathT, [self.rt_data[name] for name in ["sigma", "emission"]])
-        exp_tau = np.exp(-(sigmas * patho2).cumsum(axis=1) * self.stepsize * 1e2) * (self.stepsize / 4 / np.pi * 1e6)
+        exp_tau = np.exp(-(sigmas * patho2).cumsum(axis=1) * self.stepsize * 1e2) * self.factor
         del sigmas
         path_tau_em = self.rt_data["filters"] @ (exp_tau * emissions)
         return np.sum(path_tau_em * pathVER, axis=1)
@@ -275,8 +276,8 @@ class Forward_model_temp_abs(Forward_model):
 class Forward_model_basic_lin(Forward_model):
     def __init__(self, conf, const, grid, obs, combine_images=False):
         super().__init__(conf, const, grid, obs, [], combine_images=combine_images)
-        self.ver_id = self._get_qty_id("VER")
-        self.factor = (self.stepsize / 4 / np.pi * 1e6)
+        self.ver_id = self._get_qty_id("dVER")
+        self.factor = (self.stepsize * 1e6)
 
     def _fwdm_los(self, pos, atm, _):
         pathVER, _ = self.interp.interpolate(pos, atm[self.ver_id[1]])

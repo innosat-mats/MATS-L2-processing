@@ -12,20 +12,28 @@ from mats_l2_processing.grid import Grid
 
 
 class Alt_along_3D_grid(Grid):
-    def __init__(self, all_metadata, conf, const, processes=1, verify=False):
+    def __init__(self, all_metadata, conf, const, processes=1, verify=False, copy_points_from=None):
         super().__init__(all_metadata, conf, const, processes)
         metadata = all_metadata[0]
 
         # Initialize basic grid
-        self.ecef_to_local = self.generate_local_transform(metadata, self.timescale)
-        self.local_geoid_radius = geoid_radius(np.deg2rad(np.mean(metadata["TPlat"])))
-        ref_rad = self.local_geoid_radius + self.ref_alt
-        # self.edges = self._generate_grid(metadata, conf)
-        lims = self.grid_limits(metadata)
-        self.scalings = np.array([1e3, 1e3 / ref_rad, 1e3 / ref_rad])
-        self.offsets = np.zeros(3)
-        self.points = [self._set_points(name, conf, const, lims[i], scaling=self.scalings[i], offset=self.offsets[i])
-                       for i, name in enumerate(["ALT_GRID", "ACROSS_GRID", "ALONG_GRID"])]
+        if copy_points_from is None:
+            self.ecef_to_local = self.generate_local_transform(metadata, self.timescale)
+            self.local_geoid_radius = geoid_radius(np.deg2rad(np.mean(metadata["TPlat"])))
+            ref_rad = self.local_geoid_radius + self.ref_alt
+            # self.edges = self._generate_grid(metadata, conf)
+            lims = self.grid_limits(metadata)
+            self.scalings = np.array([1e3, 1e3 / ref_rad, 1e3 / ref_rad])
+            self.offsets = np.zeros(3)
+            self.points = [self._set_points(name, conf, const, lims[i], scaling=self.scalings[i], offset=self.offsets[i])
+                           for i, name in enumerate(["ALT_GRID", "ACROSS_GRID", "ALONG_GRID"])]
+        else:
+            egrid = copy_points_from
+            self.ecef_to_local = egrid.ecef_to_local
+            self.local_geoid_radius = egrid.local_geoid_radius
+            self.scalings, self.offsets = egrid.scalings, egrid.offsets
+            self.points = egrid.points
+
         # Set derived attributes
         self._set_derived(metadata, processes, True, verify)
 

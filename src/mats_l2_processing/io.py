@@ -62,7 +62,7 @@ def read_L1_ncdf(filename, var=None, start_img=None, stop_img=None, start_time=N
         assert stop > start, "Empty time interval selected for input data! Abort!"
 
         res["time"] = time[start:stop]
-        res["time_s"] = time_step * tdata[start:stop] 
+        res["time_s"] = time_step * tdata[start:stop]
 
         # Handle remaining variables
         if var is None:
@@ -289,5 +289,40 @@ def add_ncdf_vars(file, proto_var, new_vars, units=[]):
             if long_name is not None:
                 ncvar.long_name = long_name
             ncvar[:] = data
+            ncvar.units = nf[proto_var].units
         for v, unit in units:
             nf[v].units = unit
+
+
+def ncdf_filter_dim(ifile, fdim, keep_idx, ofile, vectorize_scalars=False):
+    with nc.Dataset(ifile, "r") as src, nc.Dataset(ofile, "w") as dst:
+        assert fdim in src.dimensions, f"The file {ifile} has no dimension {fdim}!"
+
+        # Copy global attributes
+        dst.setncatts(src.__dict__)
+
+        # Copy dimensions
+        for name, dim in src.dimensions.items():
+            if name == fdim:  # the dimension you're filtering
+                dst.createDimension(name, len(keep_idx))
+            else:
+                dst.createDimension(name, len(dim) if not dim.isunlimited() else None)
+
+        # Copy variables
+        for name, var in src.variables.items():
+            if vectorize_scalars and len(var.dimensions) == 0:
+                dims = (fdim,)
+                vals = np.full(src.dimensions[fdim].size, var[:])
+            else:
+                dims = var.dimensions
+                vals = var[:]
+            dst.createVariable(name, var.datatype, dims)
+            dst[name].setncatts(var.__dict__)  # copy attributes
+
+            if fdim in var.dimensions:
+                axis = var.dimensions.index(fdim)
+                dst[name][:] = np.take(vals, keep_idx, axis=axis)
+            elif len(var.dimensions) == 0:
+                dst[name][0] = var[0]
+            else:
+                dst[name][:] = var[:]

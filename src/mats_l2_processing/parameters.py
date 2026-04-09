@@ -20,35 +20,49 @@ def make_conf(conf_type, conf_file, args):
              "IR2": ("Infrared image channel 2", "ph/cm^2/s/srad"),
              "IR3": ("Infrared image channel 3", "ph/cm^2/s/srad"),
              "IR4": ("Infrared image channel 4", "ph/cm^2/s/srad"),
-             "UV1": ("Ultraviolet image channel 1", "ph/cm^2/s/srad"),
-             "UV2": ("Ultraviolet image channel 2", "ph/cm^2/s/srad"),
+             "UV1": ("Ultraviolet image channel 1", "ph/cm^2/nm/s/srad"),
+             "UV2": ("Ultraviolet image channel 2", "ph/cm^2/nm/s/srad"),
              "VER": ("Volume emission rate", "ph/cm^3/s"),
+             "dVER": ("Directional spectral emission rate", "ph/cm^3/nm/s/srad"),
              "T": ("Temperature", "K")}
 
     # Various approximate constants for simple estimations needed in the code
     SAT_SPEED_APPROX = 7.55  # km/s
+
+    # -------------------------------------------------------------------------------------------------------------
 
     # Configuration for temperature iterative solver
     const["iter_T"] = {"NEEDED_DATA": CCD_VARS + ATT_VARS + TP_VARS, "TP_VARS": CCD_VARS + ATT_VARS, "ncpar": ncpar,
                        "POINTING_DATA": ATT_VARS + CCD_VARS, "sat_speed_approx": SAT_SPEED_APPROX}
     req["iter_T"] = ['ALT_GRID', 'ALONG_GRID', 'ACROSS_GRID', "ASPECT_RATIO", "SEP_CHN_LOS", "OBS_SRC_VAR",
                      "DISTORTION_CORRECTION", "DISTORTION_DATA", "GEOLOCATE_1D_FROM_TP"] + \
-        GEN_RET_VARS + LM_VARS
+        GEN_RET_VARS + LM_VARS + APR_1D_VARS
 
     # Configuration for linear
     const["linear_1D"] = const["iter_T"].copy()
     const["linear_1D"]["NEEDED_DATA"] += ["TPECEFx", "TPECEFy", "TPECEFz"]
     req["linear_1D"] = GEN_RET_VARS + ['ALT_GRID', "DISTORTION_CORRECTION", "DISTORTION_DATA", "GEOLOCATE_1D_FROM_TP"]
 
+    # Configuration for stray light removal
+    req["destray"] = ["SCAT_MAX_SZA", "FIT_REF_ROWS", "FIT_BOT_ROW", "IRB_DENOISE_HW", "IRB_DENOISE_THR",
+                      "ZEMAX_DATA_DIR", "TRANSMISSIVITY"]
+    const["destray"] = {"IRB_Y_PITCH": 0.01778459, "IRB_R_SCALE_HEIGHT": 0.1524675}
+
     # Configuration for IR common grid
-    const["superpose"] = {"CCD_VARS": CCD_VARS + ATT_VARS,
-                          "ALL_VARS": CCD_VARS + ATT_VARS + ["ImageCalibrated", "ImageDestrayed"],
+    const["superpose"] = {"CCD_VARS": CCD_VARS + ATT_VARS + ["TPsza"],
+                          "ALL_VARS": CCD_VARS + ATT_VARS + ["ImageCalibrated"],
+                          "IRB_VARS": ["ImageStrayScattered", "ImageDescat"],
                           "NCDF_VARS": CCD_VARS + ATT_VARS + TP_VARS + ["CalibrationErrors", "BadColumns"],
                           "POINTING_DATA": ATT_VARS + CCD_VARS,
                           "ncpar": ncpar,
                           "CH_WIDTHS": [3.577769605779391, 8.1656558203897, 3.192647612468147, 3.2126844284028753],
-                          "CH_RAYLEIGH_SCALES": [1.10046208, 1.09399409, 1.19713362, 1.0]}
-    req["superpose"] = ["RECAL_FAC_IR", "START_TIME", "STOP_TIME", "VERSION", "DISTORTION_CORRECTION", "DISTORTION_DATA"]
+                          "CHN_WIDTHS": {"IR1": 3.577769605779391, "IR2": 8.1656558203897,
+                                         "IR3": 3.192647612468147, "IR4": 3.2126844284028753},
+                          "CH_RAYLEIGH_SCALES": [1.10046208, 1.09399409, 1.19713362, 1.0],
+                          "CHN_RAYLEIGH_SCALES": {"IR1": 1.10046208, "IR2": 1.09399409, "IR3": 1.19713362, "IR4": 1.0}}
+    const["superpose"].update(const["destray"])
+    req["superpose"] = ["RECAL_FAC_IR", "DISTORTION_CORRECTION", "DISTORTION_DATA", "SCAT_MAX_SZA", "ZEMAX_DATA_DIR",
+                        "TRANSMISSIVITY", "WRITE_IRB_CONTRIBUTION", "SCAT_TRANSFER", "SEP_IRB_DESTRAY"]
 
     # Configuration for L2 input data preparation
     req["get_data"] = ['START_TIME', 'STOP_TIME', 'VERSION', 'CHANNEL', 'STR_LEN']
@@ -59,6 +73,10 @@ def make_conf(conf_type, conf_file, args):
 
     # Configuration for data post-processing
     req["post"] = ["GRIDDED_POST", "GRID_TYPE"]
+
+    # Dummy conf
+    req["deg_map"] = ["CHANNELS", "DISTORTION_CORRECTION", "SEP_CHN_LOS", "DISTORTION_DATA", 'DEG_WRT_SAT_AXIS']
+    const["deg_map"] = {"POINTING_DATA": ATT_VARS + CCD_VARS}
 
     # Configuration for TP height calculation
     req["heights"] = ["DISTORTION_CORRECTION", "DISTORTION_DATA", "PLANET_FILE"]
@@ -88,15 +106,25 @@ def make_conf(conf_type, conf_file, args):
                 "RECAL_FAC_IR": [1.0, 1.0, 1.0, 1.0],
                 "COL_RANGE": [0, 44],
                 "ROW_RANGE": [-1, -1],
-                'TOMO_DEFAULT_DURATION': 600,
-                'TOMO_MIN_DURATION': 480,
-                'TOMO_MIN_OVERLAP': 90,
+                'TOMO_DEFAULT_DURATION': 660,
+                'TOMO_MIN_DURATION': 500,
+                'TOMO_MIN_OVERLAP': 50,
                 "CHANNEL_1D_APR": "IR2c",
                 "MEDCOLS_1D_APR": 5,
                 "INTERPOLATOR": "LINEAR",
-                "NCDF_OBS_FACTOR": 1e13,
+                "NCDF_OBS_FACTOR": 1.0,
                 "GEOLOCATE_1D_FROM_TP": True,
-                "SEP_CHN_LOS": False}
+                "SEP_CHN_LOS": False,
+                "SCAT_MAX_SZA": 90,
+                "FIT_REF_ROWS": {"IR3": [(45, 50)] + [(53, 58)] * 8, "IR4": [(49, 54)] + [(53, 58)] * 8},
+                "FIT_BOT_ROW": {"IR3": 0, "IR4": 0},
+                "IRB_DENOISE_HW": [1, 2, 2],
+                "IRB_DENOISE_THR": 3,
+                "WRITE_IRB_CONTRIBUTION": False,
+                "TRANSMISSIVITY": {"IR1": 1.0, "IR2": 1.0},
+                "SCAT_TRANSFER": False,
+                "SEP_IRB_DESTRAY": False,
+                }
 
     if conf_file is not None:
         exec(open(conf_file).read())

@@ -3,6 +3,9 @@ import netCDF4 as nc
 import logging
 from scipy.spatial.transform import Rotation as R
 from scipy.interpolate import RectBivariateSpline, interpn, LinearNDInterpolator, CloughTocher2DInterpolator
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal import deconvolve
+from scipy.optimize import curve_fit
 
 # from mats_l1_processing.pointing import pix_deg
 from mats_l2_processing.pointing import Pointing
@@ -141,7 +144,39 @@ def reinterpolate3(data, deg_maps, cm, destray=[]):
     return edge_fix(res)
 
 
+def reinterpolate_irreg(data, idxs, deg_map, cmap):
+    numimages = np.sum(idxs > -1)
+    res = np.zeros((numimages, cmap.shape[0], cmap.shape[1]))
+    print(f"Interpolating {len(idxs)} images...")
+    i = 0
+    for idx in idxs:
+        if idx < 0:
+            continue
+        ip = CloughTocher2DInterpolator(deg_map.reshape(-1, 2), data[idx, ...].flatten(),
+                                        fill_value=np.nan)
+        res[i, :, :] = ip(cmap[:, :, 0].flatten(),
+                          cmap[:, :, 1].flatten()).reshape(cmap.shape[:-1])
+        i += 1
+    return edge_fix(res)
+
+
 def edge_fix(data, fill=0):
+    res = data.copy()
+
+    cols = np.arange(data.shape[2], dtype=int)
+    for j in range(data.shape[0]):
+        for k in range(data.shape[1]):
+            test = np.where(np.isnan(res[j, k, :]), np.nan, cols)
+            if np.isnan(test).all():
+                res[j, k, :] = fill
+                continue
+            amin, amax = int(np.nanmin(test)) + 1, int(np.nanmax(test)) - 1
+            res[j, k, :amin] = res[j, k, amin]
+            res[j, k, amax:] = res[j, k, amax]
+    return res
+
+
+def edge_fix_old(data, fill=0):
     res = data.copy()
 
     cols = np.arange(data.shape[3], dtype=int)
@@ -207,3 +242,161 @@ def remove_background_sep(ir1, ir2, ir3, ir4, recal=None):
     ir1c -= ir4 - ir4_off
     ir2c -= ir3 - ir3_off
     return ir1c * 3.57, ir2c * 8.16
+
+
+def ndshift(data, offset, axis):
+    shape = list(data.shape)
+    size = shape[axis]
+    res = data.copy()
+    if offset == 0:
+        return res
+    pshape = shape.copy()
+    if offset > 0:
+        pshape[axis] = offset
+        res = np.concatenate([np.take(data, indices=np.arange(offset, size), axis=axis), np.full(pshape, np.nan)],
+                             axis=axis)
+    else:
+        pshape[axis] = - offset
+        res = np.concatenate([np.full(pshape, np.nan), np.take(data, indices=np.arange(size + offset), axis=axis)],
+                             axis=axis)
+    return res
+
+
+def gen_neighborhood(data, ranges):
+    ndims = len(data.shape)
+    assert len(ranges) == ndims, "Must have one interval in ranges for each data dimension!"
+    idxs = [arr.flatten() for arr in np.meshgrid(*ranges, indexing='ij')]
+    numn = len(idxs[0])
+    for n in range(numn):
+        if all([idxs[d][n] == 0 for d in range(ndims)]):
+            numn -= 1
+            for d in range(ndims):
+                idxs[d] = np.delete(idxs[d], n)
+            break
+
+    res = np.empty(data.shape + (numn,))
+    for n in range(numn):
+        copy = data.copy()
+        for d in range(ndims):
+            copy = ndshift(copy, idxs[d][n], d)
+        res[..., n] = copy
+
+    return res
+
+
+def denoise(data, hws, thr):
+    assert len(data.shape) == len(hws), "Need one half-width per data dimension"
+    ranges = [np.arange(-hw, hw + 1) for hw in hws]
+    neighb = gen_neighborhood(data, ranges)
+    median = np.nanmedian(neighb, axis=-1)
+    pass_1 = np.where(np.abs(data - median) > thr * np.nanstd(neighb, axis=-1), median, data)
+    neighb = gen_neighborhood(pass_1, ranges)
+    return np.where(np.abs(data - median) > thr * np.nanstd(neighb, axis=-1), median, data)
+
+
+def separate_scattered_stray(im, ref_rows, bot_row, scale_height, valid=None,
+                             residual_treatment='smooth', sigma=5):
+    if valid is None:
+        valid = np.ones(im.shape[0])
+    else:
+        assert len(valid.shape) == 1 and valid.shape[0] == im.shape[0], \
+            "'valid' must be a 1D ndarray, one value per image, or None"
+
+    frows = np.arange(im.shape[1])
+    top_rows = [int(0.5 * (ref_rows[j][0] + ref_rows[j][1] - 1)) for j in range(im.shape[2])]
+
+    top = np.stack([np.median(im[:, ref_rows[j][0]:ref_rows[j][1], j], axis=1) for j in range(im.shape[2])], axis=1)
+    im2 = im / top[:, np.newaxis, :] - 1
+    fits = np.zeros((2, im.shape[0], im.shape[2]))
+    rayleigh_fit, scat_fit = [np.full_like(im, np.nan) for _ in range(2)]
+    for j in range(im.shape[2]):
+        top_row = top_rows[j]
+        rows = np.arange(bot_row, top_row)
+
+        def exp_lin(x, a, b, Lp=scale_height, top_row=top_row, bot_row=bot_row):
+            return a * (top_row - x) + b * np.exp(-(x - bot_row) / Lp)
+
+        for i in range(im.shape[0]):
+            if not valid[i]:
+                continue
+            fits[:, i, j] = curve_fit(exp_lin, rows, im2[i, bot_row:top_row, j], p0=[0, im2[i, bot_row, j]])[0]
+            rayleigh_fit[i, :, j] = top[i, j] * fits[1, i, j] * np.exp(-(frows - bot_row) / scale_height)
+            scat_fit[i, :, j] = top[i, j] * (1 + fits[0, i, j] * (top_row - frows))
+
+    if residual_treatment == 'discard':
+        return scat_fit, rayleigh_fit
+
+    residual = im - scat_fit - rayleigh_fit
+    # scat_fit_og = scat_fit.copy()
+    # rayleigh_fit_og = rayleigh_fit.copy()
+    for j in range(im.shape[2]):
+        residual[:, top_rows[j] + 1:, j] = 0
+
+    if residual_treatment == 'smooth':
+        residual = gaussian_filter1d(residual, axis=1, sigma=sigma, mode='nearest')
+    elif residual_treatment != 'full':
+        raise ValueError(f"residual_treatment can take values 'discard', 'smooth' or 'full', but got {residual}.")
+    scat_share = scat_fit / (scat_fit + rayleigh_fit)
+    scat_fit += residual * scat_share
+    rayleigh_fit += residual * (1 - scat_share)
+    return scat_fit, rayleigh_fit  # , scat_fit_og, rayleigh_fit_og
+
+
+def find_images(ref_times, valid_ref, aux_times, thr=3.1):
+    valid = valid_ref.copy()
+    res = []
+    for i, times in enumerate(aux_times):
+        idx = np.searchsorted(times, ref_times, side='left')
+        idx = np.where(idx == 0, 1, idx)
+        idx = np.where(idx == len(times), len(times) - 1, idx)
+        idx = np.where(np.abs(times[idx - 1] - ref_times) < np.abs(times[idx] - ref_times), idx - 1, idx)
+        idx = np.where(np.abs(times[idx] - ref_times) < thr, idx, -1)
+        valid = np.logical_and(valid, idx > -1)
+        res.append(idx)
+
+    for i in range(len(aux_times)):
+        res[i] = np.where(valid, res[i], -1)
+
+    return valid, *res
+
+
+def deghost(imgs, ghost_strength, offset_pix=None, offset_angle=None, pix_pitch=None, deg_map=None, pad=None):
+    if offset_pix is not None:
+        offset = offset_pix
+    elif (offset_angle is not None) and (pix_pitch is not None):
+        offset = offset_angle / pix_pitch
+    elif (offset_angle is not None) and (deg_map is not None):
+        offset = offset_angle / np.mean(np.diff(deg_map[:, : , 1], axis=0))
+    else:
+        raise ValueError("Specify offset_pix OR offset_angle and pix_pitch OR offset_angle and deg map.")
+
+    offset_int = int(np.floor(np.abs(offset)))
+    offset_frac = np.abs(offset) - offset_int
+    kernel = np.zeros(offset_int + 2)
+    kernel[0] = 1
+    kernel[-2:] = ghost_strength * np.array([1 - offset_frac, offset_frac])
+    if offset < 0:
+        kernel = np.flip(kernel)
+
+    if pad is not None:
+        pad_shape = (imgs.shape[0], len(kernel) - 1, imgs.shape[2])
+        if type(pad) is np.ndarray:
+            assert pad.shape == pad_shape
+            extension = pad
+        elif type(pad) is float:
+            extension = np.full(pad_shape, pad)
+        elif pad == 'nearest':
+            nearest_idx = -1 if offset > 0 else 0
+            extension = np.broadcast_to(imgs[:, nearest_idx, :][:, np.newaxis, :], pad_shape)
+        stack = [extension, imgs.copy()] if offset < 0 else [imgs.copy(), extension]
+        data = np.concatenate(stack, axis=1)
+    else:
+        data = imgs
+
+    res = np.zeros_like(imgs)
+
+    for i in range(imgs.shape[0]):
+        for k in range(imgs.shape[2]):
+            res[i, :, k] = deconvolve(data[i, :, k], kernel)[0]
+
+    return res

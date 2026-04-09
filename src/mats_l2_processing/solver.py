@@ -59,7 +59,7 @@ class Linear_solver(Solver):
         assert obs_data.shape == req_obs_shape, f"obs must be of shape {req_obs_shape}, but got {obs_data.shape}!"
         self.obs_shape = req_obs_shape
 
-    def solve(self, nproc, jac=None, fx=None, save_jac=False, load_jac=False):
+    def solve(self, nproc, jac=None, fx=None, save_jac=False, load_jac=False, jac_prefix=None):
         if self.prefix is not None:
             self.fwdm.grid.write_grid_ncdf(self.fname)
             self.fwdm.grid.write_atm_ncdf(self.fname, self.fwdm.grid.vec2atm(self.xa), atm_suffix="_apr",
@@ -67,16 +67,19 @@ class Linear_solver(Solver):
         tic = time.time()
         atm_init = self.fwdm.grid.vec2atm(self.xa) if self.atm_init is None else self.atm_init
 
+        if jac_prefix is None:
+            jac_prefix = self.prefix
+
         if jac is None:
             if load_jac:
-                jac = sp.load_npz(f"{self.prefix}_K.npz")
-                fx = np.load(f"{self.prefix}_fx.npz")
+                jac = sp.load_npz(f"{jac_prefix}_K.npz")
+                fx = np.load(f"{jac_prefix}_fx.npz")
                 logging.info("Jacobian loaded from file.")
             else:
                 jac, fx = self.fwdm.calc_fwdm_jac(atm_init, nproc)
         if save_jac:
-            sp.save_npz(f"{self.prefix}_K.npz", jac)
-            with open(f"{self.prefix}_fx.npz", 'wb') as f:
+            sp.save_npz(f"{jac_prefix}_K.npz", jac)
+            with open(f"{jac_prefix}_fx.npz", 'wb') as f:
                 np.save(f, fx)
 
         # if jac is None:
