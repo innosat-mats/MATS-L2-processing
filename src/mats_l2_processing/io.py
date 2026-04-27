@@ -202,7 +202,7 @@ def ncdf_create_var(data, dset, name, dims, dtype, long_name=None, units=None):
         ncvar[:] = data
     elif type_id == 'timestamp':
         ncvar = dset.createVariable(name, 'f8', dims)
-        ncvar.units = "Seconds since 2000.01.01 00:00 UTC"
+        ncvar.units = "seconds since 2000.01.01 00:00 UTC"
         if dtype == np.datetime64:
             ncvar[:] = (data - np.datetime64("2000-01-01 00:00:00.0")) / np.timedelta64(1, "s")
         else:
@@ -294,9 +294,15 @@ def add_ncdf_vars(file, proto_var, new_vars, units=[]):
             nf[v].units = unit
 
 
-def ncdf_filter_dim(ifile, fdim, keep_idx, ofile, vectorize_scalars=False):
+def ncdf_filter_dim(ifile, fdim, keep_idx, ofile, vectorize_scalars=False, idx_type='explicit'):
+
     with nc.Dataset(ifile, "r") as src, nc.Dataset(ofile, "w") as dst:
         assert fdim in src.dimensions, f"The file {ifile} has no dimension {fdim}!"
+        if idx_type == 'interval':
+            assert len(keep_idx) == 2, "idx_type is 'interval', so keep_idx should have length 2 (start/end of intv.)"
+            keep_idx = range(keep_idx[0], keep_idx[1])
+        elif idx_type != 'explicit':
+            raise ValueError("idx_type must be 'explicit' or 'interval'!")
 
         # Copy global attributes
         dst.setncatts(src.__dict__)

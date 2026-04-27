@@ -16,7 +16,7 @@ denoised = denoise(L1["ImageCalibrated"], conf.IRB_DENOISE_HW, conf.IRB_DENOISE_
 add_ncdf_vars(L1b_file, "ImageCalibrated", [("ImageDenoised", "Calibrated image with noise removed", denoised)])
 scat, rayleigh = separate_scattered_stray(denoised, conf.FIT_REF_ROWS[chn], conf.FIT_BOT_ROW[chn],
                                           const.IRB_R_SCALE_HEIGHT / const.IRB_Y_PITCH,
-                                          valid=L1["TPsza"] < conf.SCAT_MAX_SZA)
+                                          valid=L1["TPsza"] < conf.SCAT_MAX_SZA + 2.0)
 add_ncdf_vars(L1b_file, "ImageCalibrated",
               [("ImageStrayScattered", "Stray light due to scattering inside the instrument", scat),
                ("ImageDescat", "Image with scattered stray light removed", rayleigh),

@@ -35,7 +35,7 @@ def make_conf(conf_type, conf_file, args):
     const["iter_T"] = {"NEEDED_DATA": CCD_VARS + ATT_VARS + TP_VARS, "TP_VARS": CCD_VARS + ATT_VARS, "ncpar": ncpar,
                        "POINTING_DATA": ATT_VARS + CCD_VARS, "sat_speed_approx": SAT_SPEED_APPROX}
     req["iter_T"] = ['ALT_GRID', 'ALONG_GRID', 'ACROSS_GRID', "ASPECT_RATIO", "SEP_CHN_LOS", "OBS_SRC_VAR",
-                     "DISTORTION_CORRECTION", "DISTORTION_DATA", "GEOLOCATE_1D_FROM_TP"] + \
+                     "DISTORTION_CORRECTION", "DISTORTION_DATA", "GEOLOCATE_1D_FROM_TP", "EXP_ALT_AXIS"] + \
         GEN_RET_VARS + LM_VARS + APR_1D_VARS
 
     # Configuration for linear
@@ -124,6 +124,7 @@ def make_conf(conf_type, conf_file, args):
                 "TRANSMISSIVITY": {"IR1": 1.0, "IR2": 1.0},
                 "SCAT_TRANSFER": False,
                 "SEP_IRB_DESTRAY": False,
+                "EXP_ALT_AXIS": -1,
                 }
 
     if conf_file is not None:

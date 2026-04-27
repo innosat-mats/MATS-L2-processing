@@ -120,6 +120,8 @@ def plot_apr_from_1d(grid_1d, ver_1d, grid, ver_from_1d, gridded=None):
                 fname="1d_ver_apr", xlabel="Exposure time, s", ylabel="Altitude, km")
         plot_2d(grid.points[2] * eff_rad_km, grid.points[0] * 1e-3, gridded["T_apr"][:, cid, :].T,
                 fname="1d_t_apr", xlabel="Exposure time, s", ylabel="Altitude, km")
+        plot_2d(grid.points[2] * eff_rad_km, grid.points[0] * 1e-3, gridded["jawara_T"][:, cid, :].T,
+                fname="1d_t_jawara", xlabel="Exposure time, s", ylabel="Altitude, km")
 
 
 def quick_curves(curves, xlabel=None, ylabel=None, xdata=None, ofile=None, title=None,

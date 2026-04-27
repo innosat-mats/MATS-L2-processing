@@ -97,7 +97,7 @@ def main():
     Sa_inv, terms = Sa_inv_multivariate((grid.points[0], grid.points[1] * local_earth_radius,
                                          grid.points[2] * local_earth_radius), conf.SA_WEIGHTS, volume_factors=True,
                                         store_terms=(not args.no_reg_analysis), aspect_ratio=conf.ASPECT_RATIO,
-                                        var_scales=None)
+                                        var_scales=None, exp_alt_axis=conf.EXP_ALT_AXIS)
 
     obs_size = len(obs_data.flatten())
     Se_inv = sp.diags(np.ones((obs_size)), 0).astype('float32') / (conf.RAD_SCALE ** 2 * len(fwdm.channels))

@@ -13,7 +13,7 @@ from mats_l2_processing.parameters import get_updated_conf
 
 
 def nested_VER_1D(conf, const, metadata, obs_files, rt_data, prefix, processes=1):
-   
+
     # Create an updated configuration for 1D retrieval
     column = int(np.floor(metadata[0]["NCOL"][0] / 2))
     vars_1D = {"RET_QTY": ["VER"],
@@ -41,7 +41,7 @@ def nested_VER_1D(conf, const, metadata, obs_files, rt_data, prefix, processes=1
     # Setup inverse model
     obs_data = obs.prepare_obs_data(conf_1d, obs_files)
     Sa_inv, terms = Sa_inv_multivariate((grid.points), conf.SA_WEIGHTS_1D_APR, volume_factors=True,
-                                        store_terms=False, var_scales=None)
+                                        store_terms=False, var_scales=None, exp_alt_axis=conf_1d.EXP_ALT_AXIS)
     num_im_obs = len(grid.rows) * len(conf_1d.CHANNELS)
     Se_inv = sp.diags(np.ones(num_im_obs), 0).astype('float32') / (conf.RAD_SCALE ** 2 * num_im_obs)
     solver = Linear_solver(fwdm, obs_data, conf_1d, Sa_inv, Se_inv, atm_apr, fname=f"{prefix}_ver_1D_apr")
@@ -67,14 +67,14 @@ def get_alongtrack_coord(ecef_to_local, tp_lat, tp_lon):
     assert len(tp_lon) == len(tp_lat)
     tp_ecef_sph = np.stack([np.ones(len(tp_lon)), np.deg2rad(tp_lon), np.deg2rad(tp_lat)], axis=0)
     tp_ecef_cart = np.array(sph2cart(tp_ecef_sph[0, :], tp_ecef_sph[1, :], tp_ecef_sph[2, :])).T
-    tp_local_sph = cart2sph(ecef_to_local.inv().apply(tp_ecef_cart))
+    tp_local_sph = cart2sph(ecef_to_local.apply(tp_ecef_cart))
     mid_image_idx = int(np.floor(len(tp_lat) / 2))
-    along = tp_local_sph[1] - tp_local_sph[1][mid_image_idx]
-    across = tp_local_sph[2]
+    along = tp_local_sph[2] - tp_local_sph[2][mid_image_idx]
+    across = tp_local_sph[1]
     return along, across
 
 
-def init_3D_from_1D(grid_3d, grid_1d, ver_1d, metadata):
+def init_3D_from_1D(grid_3d, grid_1d, ver_1d, metadata, fill='side_mean', side_ratio=0.1):
     assert all(grid_3d.points[0] == grid_1d.points[0])
     assert ver_1d.shape[0] == grid_1d.atm_shape[1]
     alt_grid = grid_3d.points[0]
@@ -85,10 +85,23 @@ def init_3D_from_1D(grid_3d, grid_1d, ver_1d, metadata):
     alongg = along_coord[np.newaxis, :] + shifts
 
     # talongg, tshifts, talong_coord = [x * 6450 for x in [alongg, shifts, along_coord]]
-    # breakpoint()
+    if fill == 'ends':
+        fill_value = (ver_1d[0, :], ver_1d[-1, :])
+    if fill == 'mean':
+        mean = np.mean(ver_1d, axis=0)
+        fill_value = (mean, mean)
+    if fill == 'side_mean':
+        side_len = int(ver_1d.shape[0] * side_ratio)
+        fill_value = (np.mean(ver_1d[:side_len, :], axis=0), np.mean(ver_1d[-side_len:, :], axis=0))
+    else:
+        raise ValueError(f"Invalid fill option {fill}!")
+
+    if alongg[0, 0] > alongg[-1, 0]:
+        fill_value =(fill_value[1], fill_value[0])
+
     res = np.nan * np.ones((len(alt_grid), len(grid_3d.points[2])))
     for i, alt in enumerate(alt_grid):
-        interp = interp1d(alongg[i, :], ver_1d[:, i], fill_value=(ver_1d[0, i], ver_1d[-1, i]),
+        interp = interp1d(alongg[i, :], ver_1d[:, i], fill_value=(fill_value[0][i], fill_value[1][i]),
                           bounds_error=False)
         res[i, :] = interp(grid_3d.points[2])
 

@@ -30,6 +30,7 @@ def main():
     conf = get_updated_conf(conf, {"CHANNELS": chns, "SEP_CHN_LOS": True})
     if chns[0] not in ["IR1", "IR2"]:
         raise ValueError("This script is for stray light removal in IR1 and IR2, but got {ag_chn} data instead!")
+    recal = {chn: conf.RECAL_FAC_IR[i] for i, chn in enumerate(["IR1", "IR2", "IR3", "IR4"])}
 
     ird = {chns[0]: agd}
     for i, chn in enumerate(chns[1:]):
@@ -72,19 +73,19 @@ def main():
                        for chn in chns}
     print(rayleigh_factor)
     scat_factor = {chn: scat_transfer[chn] / scat_own[chn] * conf.TRANSMISSIVITY[chns[0]] for chn in chns[1:]}
-    contrib = {chn: ird[chn]["ImageStrayScattered"] * scat_factor[chn][np.newaxis, np.newaxis, :] +
-               ird[chn]["ImageDescat"] * rayleigh_factor[chns[0]] / rayleigh_factor[chn] for chn in chns[1:]}
+    contrib = {chn: recal[chn] * (ird[chn]["ImageStrayScattered"] * scat_factor[chn][np.newaxis, np.newaxis, :] +
+               ird[chn]["ImageDescat"] * rayleigh_factor[chns[0]] / rayleigh_factor[chn]) for chn in chns[1:]}
 
     # Reinterpolation to the airglow channel
-    r_contrib = {chn: reinterpolate_irreg(contrib[chn], idx[chn], deg_maps[i + 1], cmaps[i + 1])
+    r_contrib = {chn: reinterpolate_irreg(contrib[chn], idx[chn], deg_maps[i + 1], cmaps[i + 1]) 
                  for i, chn in enumerate(chns[1:])}
 
     # Remove stray light
     if conf.SEP_IRB_DESTRAY:
         irb_ch = {"IR1": "IR4", "IR2": "IR3"}
-        destrayed = ird[chns[0]]["ImageCalibrated"][valid, :, :] - r_contrib[irb_ch[chns[0]]]
+        destrayed = ird[chns[0]]["ImageCalibrated"][valid, :, :] * recal[chns[0]] - r_contrib[irb_ch[chns[0]]]
     else:
-        destrayed = ird[chns[0]]["ImageCalibrated"][valid, :, :] - 0.5 * (r_contrib["IR3"] + r_contrib["IR4"])
+        destrayed = ird[chns[0]]["ImageCalibrated"][valid, :, :] * recal[chns[0]] - 0.5 * (r_contrib["IR3"] + r_contrib["IR4"])
 
     non_deghosted = destrayed.copy()  # For debugging.
     destrayed = deghost(destrayed, info[chns[0]]["ghost_strength"], offset_angle=info[chns[0]]["ghost_offset"],

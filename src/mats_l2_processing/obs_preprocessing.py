@@ -342,8 +342,11 @@ def separate_scattered_stray(im, ref_rows, bot_row, scale_height, valid=None,
     return scat_fit, rayleigh_fit  # , scat_fit_og, rayleigh_fit_og
 
 
-def find_images(ref_times, valid_ref, aux_times, thr=3.1):
-    valid = valid_ref.copy()
+def find_images(ref_times, aux_times, thr=3.1, valid_ref=None):
+    if valid_ref is None:
+        valid = np.ones_like(ref_times)
+    else:
+        valid = valid_ref.copy()
     res = []
     for i, times in enumerate(aux_times):
         idx = np.searchsorted(times, ref_times, side='left')

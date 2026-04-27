@@ -10,6 +10,13 @@ def expand_to_shape(data, shape, axis):
     return np.broadcast_to(np.expand_dims(data, axis=other_axes), shape)
 
 
+def density_weights(alts, scale_height=7e3, ref_alt=8.5e4, do_not_increase=True):
+    height = alts - ref_alt
+    if do_not_increase:
+        height = np.maximum(height, 0.0)
+    return np.exp(- height / scale_height)
+
+
 def tikhonov_diff_op(shape, axis, axis_grid, volume_factors=None):
     """
     Creates a sparse matrix L_{axis} with a first order Tikhonov differentiation operator.
@@ -82,7 +89,7 @@ def tikhonov_laplacian_op(grids, volume_factors, aspect_ratio=None):
 
 
 def Sa_inv_tikhonov(grid, weight_0, diff_weights=[0.0, 0.0, 0.0], laplacian_weight=0.0,
-                    volume_factors=False, store_terms=False, aspect_ratio=1):
+                    volume_factors=False, store_terms=False, aspect_ratio=1, exp_alt_axis=-2):
     """
     Creates Sa_inv for Tikhonov regularisation on general rectilinear grid.
     In n dimentions (i.e. len(grid) == n):
@@ -118,6 +125,9 @@ def Sa_inv_tikhonov(grid, weight_0, diff_weights=[0.0, 0.0, 0.0], laplacian_weig
         diagonal /= np.sum(diagonal)
     diagonal = diagonal.flatten()
     volumes = np.sqrt(diagonal)
+    if exp_alt_axis > -1:
+        dw = density_weights(expand_to_shape(grid[exp_alt_axis], shape, exp_alt_axis).flatten())
+        volumes *= dw
 
     Sa_inv = sp.diags(diagonal * weight_0 ** 2).astype('float64')
     terms = {"Zero-order": Sa_inv.copy()} if store_terms else {}
@@ -144,7 +154,8 @@ def Sa_inv_tikhonov(grid, weight_0, diff_weights=[0.0, 0.0, 0.0], laplacian_weig
     return Sa_inv, terms
 
 
-def Sa_inv_multivariate(grid, weights, volume_factors=False, store_terms=False, aspect_ratio=False, var_scales=None):
+def Sa_inv_multivariate(grid, weights, volume_factors=False, store_terms=False, aspect_ratio=False, var_scales=None,
+                        exp_alt_axis=None):
     """
     Builds Sa_inv for retrievals with two variables on the same grid.
 
@@ -171,9 +182,13 @@ def Sa_inv_multivariate(grid, weights, volume_factors=False, store_terms=False, 
         assert len(var_scales) == len(weights)
         scaled_weights = [np.sqrt(s) * np.array(weights[i]) for i, s in enumerate(var_scales)]
 
+    if type(exp_alt_axis) is not list:
+        exp_alt_axis = np.full(ndims, exp_alt_axis)
+
     Sas = [Sa_inv_tikhonov(grid, w[0], diff_weights=w[1:(ndims + 1)], laplacian_weight=w[ndims + 1],
-                           volume_factors=volume_factors, store_terms=store_terms, aspect_ratio=aspect_ratio)
-           for w in scaled_weights]
+                           volume_factors=volume_factors, store_terms=store_terms, aspect_ratio=aspect_ratio,
+                           exp_alt_axis=exp_alt_axis[i])
+           for i, w in enumerate(scaled_weights)]
 
     if store_terms:
         terms = {name: sp.block_diag([Sas[j][1][name] for j in range(len(Sas))]) for name in Sas[0][1].keys()}
