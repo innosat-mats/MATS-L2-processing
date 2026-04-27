@@ -1,198 +1,82 @@
+from abc import ABC, abstractmethod
 import numpy as np
-import netCDF4 as nc
-import logging
-from scipy.spatial.transform import Rotation as R
-from scipy.interpolate import RectBivariateSpline, interpn, LinearNDInterpolator, CloughTocher2DInterpolator
-
 # from mats_l1_processing.pointing import pix_deg
-from mats_l2_processing.pointing import Pointing
-from mats_l2_processing.util import get_image
+from mats_l2_processing.pointing import faster_heights, verify_channels
+from mats_l2_processing.util import get_image, multiprocess, seconds2DT
+from mats_l2_processing.io import append_gen_ncdf, read_L1_ncdf
+# from mats_utils.geolocation.coordinates import col_heights
+import logging
 
 
-#def get_deg_map(image):
-#    dmap = np.zeros((image["NCOL"] + 1, image["NROW"], 2))
-#    for i in range(dmap.shape[0]):
-#        for j in range(dmap.shape[1]):
-#            dmap[i, j, :] = pix_deg(image, i, j)
-#    return dmap
+class Obs(ABC):
+    def __init__(self, grid, metadata, conf, const, processes):
+        verify_channels(conf, metadata)
 
+        self.grid = grid
+        self.metadata = metadata
 
-def time_offsets(times):
-    # Check temporal alignement, remove images from the beginning if necessary to align
-    numtimes = len(times)
-    stimes = []
-    for chn, time in enumerate(times):
-        stimes.append(time)
-        if chn == 0:
-            dt = np.median(np.diff(time))
-            numimg = len(stimes[-1])
+        self.rows, self.columns = get_row_col(conf, metadata[0])
+        self.channels = conf.CHANNELS
+        self.sep_chn_los = conf.SEP_CHN_LOS
+
+        self.TP_heights_vars = const.TP_VARS
+        self.fwdm_vars = const.NEEDED_DATA
+        # self.img_time = metadata["time_s"]
+        self.num_simages = metadata[0]['size']
+
+        self.TP_heights = self._calc_tp_heights(metadata, processes)
+        self.valid_obs = np.logical_and(self.TP_heights > conf.TP_ALT_RANGE[0] * 1e3,
+                                        self.TP_heights < conf.TP_ALT_RANGE[1] * 1e3)
+        assert self.valid_obs.any(), "All observations flagged as invalid, nothing to retrieve!"
+
+    def _calc_tp_heights_image(self, image, common_args):
+        return faster_heights(image, self.grid.pointing, cols=self.columns, rows=self.rows).T
+
+    def _calc_tp_heights(self, metadata, processes):
+        heights = []
+        idxs = range(len(metadata)) if self.sep_chn_los else [0]
+        for i in idxs:
+            heights.append(multiprocess(self._calc_tp_heights_image, metadata[i], self.TP_heights_vars,
+                                        processes, [], stack=True))
+        if self.sep_chn_los:
+            return np.stack(heights, axis=0)
         else:
-            numimg = np.minimum(numimg, len(stimes[-1]))
+            shape = (len(self.channels),) + heights[0].shape
+            return np.broadcast_to(heights[0][np.newaxis, ...], shape)
 
-    offsets = np.zeros(numtimes, dtype=int)
-    for i in range(1, numtimes):
-        deltas = stimes[0][:numimg] - stimes[i][:numimg]
-        offsets[i] = np.rint(np.median(deltas) / dt)
+    def calc_los_image(self, num_simage, chn):
+        return self.grid.calc_los_image(get_image(self.metadata[chn], num_simage, self.fwdm_vars), [])
 
-    min_offset = np.min(offsets)
-    if min_offset < 0:
-        offsets -= min_offset
-    numimg = np.min([len(stimes[i]) - offsets[i] for i in range(numtimes)])
+    def prepare_obs_data(self, conf, ifiles):
+        obs_data = np.empty((len(self.channels), len(self.grid.img_time), len(self.columns), len(self.rows)))
+        idxs = np.meshgrid(self.rows, self.columns, indexing='ij')
+        for i, chn in enumerate(self.channels):
+            cvar = conf.OBS_SRC_VAR[chn]
+            meta_idx = i if conf.SEP_CHN_LOS else 0
+            tlim = [seconds2DT(self.metadata[meta_idx]["time_s"][idx] + offset)
+                    for idx, offset in [(0, -0.1), (-1, 0.1)]]
+            data = read_L1_ncdf(ifiles[meta_idx], start_time=tlim[0], stop_time=tlim[1], var=[cvar])
+            obs_data[i, ...] = conf.NCDF_OBS_FACTOR * np.transpose(data[cvar][:, idxs[0], idxs[1]], axes=(0, 2, 1))
+        return obs_data
 
-    for i in range(numtimes):
-        rtimes = stimes[i][offsets[i]:(offsets[i] + numimg)]
-        if i == 0:
-            rtimes0 = rtimes
-        if np.max(np.abs(rtimes - rtimes0)) > dt / 2:
-            logging.warning(f"Misaligned channel #{i}")
-            for st in [f"{x[0].minute}:{x[0].second}.{x[0].microsecond:2d} - " +
-                       f'{x[1].minute}:{x[1].second}.{x[1].microsecond:2d} ' for x in zip(rtimes, rtimes0)]:
-                logging.warning(st)
-            raise ValueError("Could not align channels, maybe there are gaps in data?")
-    return offsets, numimg
+    def write_obs_ncdf(self, fname, obs_data, obs_suffix="", obs_suffix_long="", attributes={}):
+        ncvars = {}
+        dims = ("img_time", "img_col", "img_row")
+        for i, chn in enumerate(self.channels):
+            ncvars[f"{chn}{obs_suffix}"] = (f"{self.grid.ncpar[chn][0]}{obs_suffix_long}", self.grid.ncpar[chn][1],
+                                            obs_data[i, :, :, :], dims)
+        append_gen_ncdf(fname, ncvars, attributes=attributes)
 
-
-def cross_maps(data, image_vars, deg_maps):
-    # deg_maps = [Pointing(data[chn], conf, const).chn_map(data[chn]["channel"]) for chn in range(len(data))]
-    rel_deg_map = np.zeros((len(deg_maps), deg_maps[0].shape[0], deg_maps[0].shape[1], 2))
-    for chn in range(len(data)):
-        # rel_qprime = R.inv(R.from_quat(data[chn]['qprime'][0, ...])) * R.inv(R.from_quat(data[chn]["afsAttitudeState"]
-        # [0, ...])) * R.from_quat(data[0]["afsAttitudeState"][0, ...]) * R.from_quat(data[0]['qprime'][0, ...])
-        rel_qprime = R.inv(R.from_quat(data[chn]['qprime'][0, ...])) * R.from_quat(data[0]['qprime'][0, ...])
-        for i in range(rel_deg_map.shape[1]):
-            for j in range(rel_deg_map.shape[2]):
-                r = rel_qprime * R.from_euler('xyz', [0, deg_maps[0][i, j, 1], deg_maps[0][i, j, 0]], degrees=True)
-                _, rel_deg_map[chn, i, j, 1], rel_deg_map[chn, i, j, 0] = r.as_euler('xyz', degrees=True)
-    return rel_deg_map
+    def write_TPheights_ncdf(self, fname):
+        ncvars = {}
+        dims = ("img_time", "img_col", "img_row")
+        TP_channels = self.channels if self.sep_chn_los else [self.channels[0]]
+        for i, chn in enumerate(TP_channels):
+            ncvars[f"TPheight_{chn}"] = (f"Tangent point height, {chn}", "meter", self.TP_heights[i, ...], dims)
+        append_gen_ncdf(fname, ncvars)
 
 
-def reinterpolate(data, deg_maps, cm):
-    assert len(deg_maps) == cm.shape[0]
-    numimgs = [len(data[i]["EXPDate"]) for i in range(len(data))]
-    numimg = min(numimgs)
-    numchn = len(numimgs)
-    res = np.zeros((len(deg_maps) - 1, numimg, deg_maps[0].shape[1],
-                    deg_maps[0].shape[0]))
-    for chn in range(1, numchn):
-        x = deg_maps[chn][:, int(deg_maps[chn].shape[1] / 2), 0]
-        y = deg_maps[chn][int(deg_maps[chn].shape[0] / 2), :, 1]
-        print(f"Interpolating channel {chn}/{len(deg_maps)}, {numimg} images")
-        for im in range(numimg):
-            interp = RectBivariateSpline(y, x, data[chn]["ImageCalibrated"][im, ...])
-            res[chn - 1, im, :, :] = interp(cm[chn, :, :, 1], cm[chn, :, :, 0], grid=False).T
-    return res
-
-
-def reinterpolate2(data, deg_maps, cm, destray=[]):
-    assert len(deg_maps) == cm.shape[0]
-    numimgs = [len(data[i]["EXPDate"]) for i in range(len(data))]
-    numimg = min(numimgs)
-    numchn = len(numimgs)
-    if len(destray) == 0:
-        destray = [True for i in range(numchn - 1)]
-    else:
-        assert len(destray) == numchn - 1
-
-    res = np.zeros((len(deg_maps) - 1, numimg, deg_maps[0].shape[1],
-                    deg_maps[0].shape[0]))
-    for chn in range(1, numchn):
-        image_var = "ImageDestrayed" if destray[chn - 1] else "ImageCalibrated"
-        x = deg_maps[chn][:, int(deg_maps[chn].shape[1] / 2), 0]
-        y = deg_maps[chn][int(deg_maps[chn].shape[0] / 2), :, 1]
-        print(f"Interpolating channel {chn}/{len(deg_maps)}, {numimg} images")
-        cmf = np.flip(cm, axis=-1)
-        for im in range(numimg):
-            # breakpoint()
-            res[chn - 1, im, :, :] = interpn([y, x], data[chn][image_var][im, ...],
-                                             np.swapaxes(cmf[chn, :, :, :], 0, 1),
-                                             method='linear', bounds_error=False, fill_value=0)
-    return res
-
-
-def reinterpolate3(data, deg_maps, cm, destray=[]):
-    assert len(deg_maps) == cm.shape[0]
-    numimgs = [len(data[i]["EXPDate"]) for i in range(len(data))]
-    numimg = min(numimgs)
-    numchn = len(numimgs)
-    if len(destray) == 0:
-        destray = [True for i in range(numchn - 1)]
-    else:
-        assert len(destray) == numchn - 1
-
-    res = np.zeros((len(deg_maps) - 1, numimg, deg_maps[0].shape[0],
-                    deg_maps[0].shape[1]))
-    for chn in range(1, numchn):
-        image_var = "ImageDestrayed" if destray[chn - 1] else "ImageCalibrated"
-        # x, y = [deg_maps[chn][:, :, i].flatten() for i in range(2)]
-        print(f"Interpolating channel {chn}/{len(deg_maps)}, {numimg} images")
-        #cmf = np.flip(cm, axis=-1)
-        # cms = np.swapaxes(cmf[chn, :, :, :], 0, 1)
-        for im in range(numimg):
-            # print(f"Image {im + 1}/{numimg}")
-            # breakpoint()
-            # res[chn - 1, im, :, :] = interpn([y, x], data[chn][image_var][im, ...],
-            # #                                 np.swapaxes(cmf[chn, :, :, :], 0, 1),
-            #                                 method='linear', bounds_error=False, fill_value=0)
-            ip = CloughTocher2DInterpolator(deg_maps[chn].reshape(-1, 2), data[chn][image_var][im, ...].flatten(),
-                                      fill_value=np.nan)
-            res[chn - 1, im, :, :] = ip(cm[chn, :, :, 0].flatten(), cm[chn, :, :, 1].flatten()).reshape(deg_maps[0].shape[:-1])
-            # ip = RBFInterpolator(deg_maps[chn].reshape(-1, 2), data[chn][image_var][im, ...].flatten(), neighbors=50, kernel="cubic")
-            # res[chn - 1, im, :, :] = ip(cm[chn, ...].reshape(-1, 2)).reshape(deg_maps[0].shape[:-1])
-    return edge_fix(res)
-
-
-def edge_fix(data, fill=0):
-    res = data.copy()
-
-    cols = np.arange(data.shape[3], dtype=int)
-    for i in range(data.shape[0]):
-        for j in range(data.shape[1]):
-            for k in range(data.shape[2]):
-                test = np.where(np.isnan(res[i, j, k, :]), np.nan, cols)
-                if np.isnan(test).all():
-                    res[i, j, k, :] = fill
-                    continue
-                amin, amax = int(np.nanmin(test)) + 1, int(np.nanmax(test)) - 1
-                res[i, j, k, :amin] = res[i, j, k, amin]
-                res[i, j, k, amax:] = res[i, j, k, amax]
-    return res
-
-
-def remove_background_ds(ir1, ir2, ir3, ir4, ch_widths, rayleigh_scales, recal=None):
-    ir1c, ir2c = ir1.copy(), ir2.copy()
-    if recal is not None:
-        ir1c, ir2c, ir3, ir4 = [recal[i] * arr for i, arr in enumerate([ir1c, ir2c, ir3, ir4])]
-    ir1c -= ir4 * rayleigh_scales[0] / rayleigh_scales[3]
-    ir2c -= ir4 * rayleigh_scales[1] / rayleigh_scales[3]
-    return ir1c * ch_widths[0], ir2c * ch_widths[1]
-
-
-def remove_background_1ch(ag, bg, ch_width, rayleigh_scales, recal=None):
-    print(ch_width, rayleigh_scales
-    agc, bgc = ag.copy(), bg.copy()
-    if recal is not None:
-        agc, bgc = [recal[i] * arr for i, arr in enumerate([agc, bgc])]
-    agc -= bgc * rayleigh_scales[0] / rayleigh_scales[1]
-    return agc * ch_width
-
-
-def remove_background(ir1, ir2, ir3, ir4, recal=None):
-    ir1c, ir2c = ir1.copy(), ir2.copy()
-    if recal is not None:
-        ir1c, ir2c, ir3, ir4 = [recal[i] * arr for i, arr in enumerate([ir1c, ir2c, ir3, ir4])]
-    ir3_off, ir4_off = [np.mean(arr[:, -11:-7, :], axis=1)[:, np.newaxis, :] / 1.05 for arr in [ir3, ir4]]
-    bgr = (ir3 - ir3_off + ir4 - ir4_off) / 2
-    ir1c -= bgr
-    ir2c -= bgr
-    return ir1c * 3.57, ir2c * 8.16
-
-
-def remove_background_sep(ir1, ir2, ir3, ir4, recal=None):
-    ir1c, ir2c = ir1.copy(), ir2.copy()
-    if recal is not None:
-        ir1c, ir2c, ir3, ir4 = [recal[i] * arr for i, arr in enumerate([ir1c, ir2c, ir3, ir4])]
-    ir3_off, ir4_off = [np.mean(arr[:, -11:-7, :], axis=1)[:, np.newaxis, :] / 1.05 for arr in [ir3, ir4]]
-    # bgr = (ir3 - ir3_off + ir4 - ir4_off) / 2
-    ir1c -= ir4 - ir4_off
-    ir2c -= ir3 - ir3_off
-    return ir1c * 3.57, ir2c * 8.16
+def get_row_col(conf, metadata):
+    row_range = (0, metadata["NROW"][0]) if conf.ROW_RANGE[0] < 0 else conf.ROW_RANGE
+    columns, rows = [np.arange(r[0], r[1], 1) for r in [conf.COL_RANGE, row_range]]
+    return rows, columns

@@ -1,13 +1,13 @@
 from abc import ABC, abstractmethod
 import numpy as np
 from numpy.linalg import norm
-from scipy import sparse
+from scipy import sparse as sp
 import logging
 import time
-from sparse_dot_mkl import dot_product_mkl as mdot
+from sparse_dot_mkl import dot_product_mkl
 
 
-class Implicit_sparse_matrix(ABC):
+class Implicit_matrix(ABC):
     def __init__(self, shape):
         self.shape = shape
 
@@ -16,16 +16,17 @@ class Implicit_sparse_matrix(ABC):
         pass
 
 
-class LM_mkl_sparse_matrix(Implicit_sparse_matrix):
+class LM_matrix(Implicit_matrix):
     def __init__(self, K, Seinv, Sainv, lm=0):
         super().__init__(K.shape)
         self.K = K
         self.Seinv = Seinv
         self.Sainv = Sainv
         self.lm = lm
+        self.mdot = dot_product_mkl if type(K) is sp.csr_matrix else np.dot
 
     def dot(self, vec):
-        return mdot(self.K.T, self.Seinv @ mdot(self.K, vec)) + mdot(self.Sainv, vec) + self.lm * vec
+        return self.mdot(self.K.T, self.Seinv @ self.mdot(self.K, vec)) + self.Sainv @ vec + self.lm * vec
 
 
 def cg_solve(A, b, x_init=None, atol=0, rtol=1e-5, maxiter=5000):

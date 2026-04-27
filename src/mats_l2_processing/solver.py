@@ -4,22 +4,24 @@ import scipy.sparse as sp
 from multiprocessing import Pool
 from itertools import repeat
 
-from sparse_dot_mkl import dot_product_mkl as mdot
+from sparse_dot_mkl import dot_product_mkl
 import time
 import logging
 import mats_l2_processing.numerical_methods as num
 
 
 class Solver(ABC):
-    def __init__(self, fwdm, obs, conf, Sa_inv, Se_inv, atm_apr, Sa_terms):
+    def __init__(self, fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, Sa_terms):
         self.fwdm = fwdm
         # tph = fwdm.grid.TP_heights
-        self.y = obs.flatten()
-        self.y_ar = np.where(fwdm.valid_obs[np.newaxis, ...], obs, 0.0).flatten()
+        self.y = obs_data.flatten()
+        self.y_ar = np.where(fwdm.obs.valid_obs, obs_data, 0.0).flatten()
         self.Sa_inv = Sa_inv
         self.Se_inv = Se_inv
         self.xa = self.fwdm.grid.atm2vec(atm_apr)
         self.Sa_terms = {"Sa": self.Sa_inv} if Sa_terms is None else Sa_terms
+
+        self.mdot = dot_product_mkl if self.fwdm.sparse else np.dot
 
     # @abstractmethod
     # def solve(self, nproc):
@@ -29,8 +31,9 @@ class Solver(ABC):
         assert y.shape == fx.shape
         yr = y - fx
         y_se = yr.T @ self.Se_inv
+        numobs_chn = self.fwdm.num_simages * len(self.fwdm.obs.columns) * len(self.fwdm.obs.rows)
         for i, chn in enumerate(self.fwdm.channels):
-            id0, id1 = i * self.fwdm.numobs, (i + 1) * self.fwdm.numobs
+            id0, id1 = i * numobs_chn, (i + 1) * numobs_chn
             logging.info(f"Contributions: {chn} {np.dot(y_se[id0:id1], yr[id0:id1]):.2e}")
 
         assert x.shape == xa.shape
@@ -45,25 +48,42 @@ class Solver(ABC):
 
 
 class Linear_solver(Solver):
-    def __init__(self, fwdm, obs, conf, Sa_inv, Se_inv, atm_apr, fname=None, Sa_terms=None, atm_init=None):
-        super().__init__(fwdm, obs, conf, Sa_inv, Se_inv, atm_apr, Sa_terms)
+    def __init__(self, fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, fname=None, Sa_terms=None, atm_init=None,
+                 save_jac=False, load_jac=False):
+        super().__init__(fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, Sa_terms)
         self.prefix = fname
         self.atm_init = atm_init
-        self.fname = f"{fname}_L2_lin.nc"
+        self.fname = f"{fname}_L2.nc"
         self.conf = conf
-        req_obs_shape = (len(fwdm.channels), len(fwdm.grid.img_time), len(fwdm.grid.columns), len(fwdm.grid.rows))
-        assert obs.shape == req_obs_shape, f"obs must be of shape {req_obs_shape}, but got {obs.shape}!"
+        req_obs_shape = (len(fwdm.channels), len(fwdm.grid.img_time), len(fwdm.obs.columns), len(fwdm.obs.rows))
+        assert obs_data.shape == req_obs_shape, f"obs must be of shape {req_obs_shape}, but got {obs_data.shape}!"
         self.obs_shape = req_obs_shape
 
-    def solve(self, nproc, jac=None, fx=None):
+    def solve(self, nproc, jac=None, fx=None, save_jac=False, load_jac=False, jac_prefix=None):
         if self.prefix is not None:
             self.fwdm.grid.write_grid_ncdf(self.fname)
             self.fwdm.grid.write_atm_ncdf(self.fname, self.fwdm.grid.vec2atm(self.xa), atm_suffix="_apr",
                                           atm_suffix_long=", a priori")
-
+        tic = time.time()
         atm_init = self.fwdm.grid.vec2atm(self.xa) if self.atm_init is None else self.atm_init
+
+        if jac_prefix is None:
+            jac_prefix = self.prefix
+
         if jac is None:
-            jac, fx = self.fwdm.calc_fwdm_jac(atm_init, nproc)
+            if load_jac:
+                jac = sp.load_npz(f"{jac_prefix}_K.npz")
+                fx = np.load(f"{jac_prefix}_fx.npz")
+                logging.info("Jacobian loaded from file.")
+            else:
+                jac, fx = self.fwdm.calc_fwdm_jac(atm_init, nproc)
+        if save_jac:
+            sp.save_npz(f"{jac_prefix}_K.npz", jac)
+            with open(f"{jac_prefix}_fx.npz", 'wb') as f:
+                np.save(f, fx)
+
+        # if jac is None:
+        #    jac, fx = self.fwdm.calc_fwdm_jac(atm_init, nproc)
         # elif fx is None:
         #    fx = self.fwdm.calc_fwdm(atm_init, nproc)
 
@@ -72,43 +92,46 @@ class Linear_solver(Solver):
                 fx_f = fx.reshape(self.obs_shape)
             else:
                 fx_f = np.concatenate([fx_im[:, np.newaxis, :, :] for fx_im in fx], axis=1)
-            self.fwdm.grid.write_obs_ncdf(self.fname, fx_f, self.fwdm.channels, obs_suffix="_sim_apr",
-                                          obs_suffix_long="forward model simulation from a priori")
+            self.fwdm.obs.write_TPheights_ncdf(self.fname)
+            self.fwdm.obs.write_obs_ncdf(self.fname, fx_f, obs_suffix="_sim_apr",
+                                         obs_suffix_long="forward model simulation from a priori")
             del fx_f
-            self.fwdm.grid.write_obs_ncdf(self.fname, self.y.reshape(self.obs_shape), self.fwdm.channels,
-                                          obs_suffix_long=", MATS observation")
+            self.fwdm.obs.write_obs_ncdf(self.fname, self.y.reshape(self.obs_shape),
+                                         obs_suffix_long=", MATS observation")
 
         xpr = np.zeros_like(self.xa) if self.atm_init is None else self.fwdm.grid.atm2vec(atm_init) - self.xa
         if self.fwdm.grid.combine_images:
-            sol = self._mkl_step((xpr, jac, fx.flatten(), self.y_ar), [])
+            sol = self._solve_eq((xpr, jac, fx.flatten(), self.y_ar), [])
         else:
             yari = self.y_ar.reshape(self.obs_shape)
             im_args = [(self.fwdm.grid.get_imvec(xpr, i), jac[i], fx[i].flatten(), yari[:, i, :, :].flatten())
                        for i in range(self.fwdm.grid.atm_shape[1])]
             del yari
             with Pool(processes=nproc) as pool:
-                sols = pool.starmap(self._mkl_step, zip(im_args, repeat([])))
+                sols = pool.starmap(self._solve_eq, zip(im_args, repeat([])))
             sol = self.fwdm.grid.imvecs2vec(sols)
         atm_res = self.fwdm.grid.vec2atm(sol)
 
         if self.prefix is not None:
             self.fwdm.grid.write_atm_ncdf(self.fname, atm_res, atm_suffix="", atm_suffix_long=", final result")
+
+        logging.info(f"Total solver run time: {time.time() - tic} s.")
         return atm_res
 
-    def _mkl_step(self, im_args, common_args):
+    def _solve_eq(self, im_args, common_args):
         xpr, K, fx, y_ar = im_args
-        b = mdot(self.Sa_inv, xpr) +\
-            mdot(K.T, self.Se_inv @ num.nannorm((fx - y_ar), "fx", abort=(not self.fwdm.debug_nan)))
-        A = num.LM_mkl_sparse_matrix(K, self.Se_inv, self.Sa_inv, lm=0)
+        b = self.Sa_inv @ xpr +\
+            self.mdot(K.T, self.Se_inv @ num.nannorm((fx - y_ar), "fx", abort=(not self.fwdm.debug_nan)))
+        A = num.LM_matrix(K, self.Se_inv, self.Sa_inv, lm=0)
         dx, resid_norm, iters = num.cg_solve(A, b, x_init=np.zeros_like(xpr), atol=self.conf.CG_ATOL,
                                              rtol=self.conf.CG_RTOL, maxiter=self.conf.CG_MAX_STEPS)
         return xpr - dx
 
 
 class Lavenberg_marquardt_solver(Solver):
-    def __init__(self, fwdm, obs, conf, Sa_inv, Se_inv, atm_apr, fname,
+    def __init__(self, fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, fname,
                  save_jac=False, load_jac=False, Sa_terms=None, init_ncdf=False):
-        super().__init__(fwdm, obs, conf, Sa_inv, Se_inv, atm_apr, Sa_terms)
+        super().__init__(fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, Sa_terms)
         self.prefix = fname
         self.save_jac = save_jac
         self.load_jac = load_jac
@@ -118,7 +141,7 @@ class Lavenberg_marquardt_solver(Solver):
 
         self.fname = f"{fname}_L2.nc"
         req_obs_shape = (len(fwdm.channels), len(fwdm.grid.img_time), len(fwdm.grid.columns), len(fwdm.grid.rows))
-        assert obs.shape == req_obs_shape, f"obs must be of shape {req_obs_shape}, but got {obs.shape}!"
+        assert obs_data.shape == req_obs_shape, f"obs must be of shape {req_obs_shape}, but got {obs_data.shape}!"
 
     def _L2_write_init(self, fx):
         atts = {"ret_min_height": self.conf.RET_ALT_RANGE[0] * 1e3,
@@ -129,10 +152,11 @@ class Lavenberg_marquardt_solver(Solver):
             self.fwdm.grid.write_grid_ncdf(self.fname, atts)
             self.fwdm.grid.write_atm_ncdf(self.fname, self.atm_apr, atm_suffix="_apr", atm_suffix_long=", a priori")
             atts = {}
-        self.fwdm.grid.write_obs_ncdf(self.fname, self.y.reshape(fx.shape), self.fwdm.channels,
-                                      obs_suffix_long=", MATS observation")
-        self.fwdm.grid.write_obs_ncdf(self.fname, fx, self.fwdm.channels, obs_suffix="_sim_apr", attributes=atts,
-                                      obs_suffix_long="forward model simulation based on a priori")
+        self.fwdm.obs.write_TPheights_ncdf(self.fname)
+        self.fwdm.obs.write_obs_ncdf(self.fname, self.y.reshape(fx.shape),
+                                     obs_suffix_long=", MATS observation")
+        self.fwdm.obs.write_obs_ncdf(self.fname, fx, obs_suffix="_sim_apr", attributes=atts,
+                                     obs_suffix_long="forward model simulation based on a priori")
 
     def _L2_write_iter(self, atm, fx, it_id):
         # it_id is iteration number if positive, -1 if final value
@@ -145,15 +169,15 @@ class Lavenberg_marquardt_solver(Solver):
 
         self.fwdm.grid.write_atm_ncdf(self.fname, atm, atm_suffix=suffix, atm_suffix_long=long_suffix)
         logging.log(15, f"fx shape: {fx.shape}")
-        self.fwdm.grid.write_obs_ncdf(self.fname, fx, self.fwdm.channels, obs_suffix=f"_sim{suffix}",
-                                      obs_suffix_long=f", forward model simulation for {long_suffix}")
+        self.fwdm.obs.write_obs_ncdf(self.fname, fx, obs_suffix=f"_sim{suffix}",
+                                     obs_suffix_long=f", forward model simulation for {long_suffix}")
 
-    def _mkl_LM_iteration(self, xp, K, fx, lm):
+    def _LM_iteration(self, xp, K, fx, lm):
         tic = time.time()
-        b = mdot(self.Sa_inv, xp - self.xa) +\
-            mdot(K.T, self.Se_inv @ num.nannorm((fx - self.y_ar), "fx", abort=(not self.fwdm.debug_nan)))
+        b = self.mdot(self.Sa_inv, xp - self.xa) +\
+            self.mdot(K.T, self.Se_inv @ num.nannorm((fx - self.y_ar), "fx", abort=(not self.fwdm.debug_nan)))
         logging.log(15, "Solver: b calculated.")
-        A = num.LM_mkl_sparse_matrix(K, self.Se_inv, self.Sa_inv, lm=lm)
+        A = num.LM_matrix(K, self.Se_inv, self.Sa_inv, lm=lm)
         dx, resid_norm, iters = num.cg_solve(A, b, x_init=np.zeros_like(xp), atol=self.conf.CG_ATOL,
                                              rtol=self.conf.CG_RTOL, maxiter=self.conf.CG_MAX_STEPS)
         logging.log(15, f"Solver: calculated new atmosphere state in {time.time() - tic:.3f} s.")
@@ -207,7 +231,7 @@ class Lavenberg_marquardt_solver(Solver):
             lms = [lm_par * float(self.conf.LM_FAC) ** x for x in range(-1, self.conf.LM_MAX_FACTS_PER_ITER + 1)]
             for j, lm in enumerate(lms):
                 sol["lm"] = lm
-                xhat = self._mkl_LM_iteration(xp, K, fxp.flatten(), lm)
+                xhat = self._LM_iteration(xp, K, fxp.flatten(), lm)
                 sol["sol"] = self.fwdm.grid.reset_invalid(xhat)
                 sol["fx"] = self.fwdm.calc_fwdm(self.fwdm.grid.vec2atm(sol["sol"]), nproc)
                 sol["cf"] = num.cost_func(sol["sol"], self.xa, self.y_ar, sol["fx"].flatten(), self.Se_inv,

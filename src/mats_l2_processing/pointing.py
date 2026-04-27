@@ -13,10 +13,8 @@ from skyfield.framelib import itrs
 
 class Pointing():
     def __init__(self, metadata, conf, const):
-        limb_channels = ["IR1", "IR2", "IR3", "IR4", "UV1", "UV2"]
-        self.channels = list(set(metadata["channel"].tolist()).intersection(limb_channels))
-        if len(self.channels) < 1:
-            raise ValueError("Invalid data supplied for pointiing initialization!")
+        verify_channels(conf, metadata)
+        self.channels = conf.CHANNELS
 
         if conf.DISTORTION_CORRECTION:
             dist_data = read_ncdf(conf.DISTORTION_DATA, None, get_units=False)
@@ -24,10 +22,11 @@ class Pointing():
             dist_data = None
 
         self.deg_map = {}
-        for chn in self.channels:
-            idx = metadata["channel"].tolist().index(chn)
-            self.deg_map[chn] = get_deg_map({v: metadata[v][idx] if len(metadata[v].shape) > 0 else metadata[v]
-                                             for v in const.POINTING_DATA}, dist_data=dist_data)
+        num_meta = len(self.channels) if conf.SEP_CHN_LOS else 1
+        for chid in range(num_meta):
+            self.deg_map[self.channels[chid]] = get_deg_map({v: metadata[chid][v][0] if len(metadata[chid][v].shape) > 0
+                                                            else metadata[v] for v in const.POINTING_DATA},
+                                                            dist_data=dist_data)
 
     def pix_deg(self, image, xpix, ypix):
         return self.deg_map[image["channel"]][:, xpix, ypix]
@@ -49,7 +48,7 @@ def sparse_tp_data(image, deg_map, nx=5, ny=10):
     else:
         xpixels = np.array([int(np.floor(image['NCOL'] / 2))])
     ypixels = np.append(np.arange(0, image['NROW'] - 1, ny), image["NROW"] - 1)
-    t = load.timescale().from_datetime(image['EXPDate'])
+    t = load.timescale().from_datetime(image['time'])
     ecipos = image['afsGnssStateJ2000'][0:3]
     quat = R.from_quat(np.roll(image['afsAttitudeState'], -1))
     qprime = R.from_quat(image['qprime'])
@@ -103,8 +102,8 @@ def TP_data(image, pointing, var, ny=10, cols=None, rows=None, planets_file=None
 
     if len(set(var) & set(["lon", "lat", "sza"])) > 0:
         timescale = load.timescale()
-        t = timescale.from_datetime(image["EXPDate"])
-        # dt = seconds2DT(image["EXPDate"])
+        t = timescale.from_datetime(image["time"])
+        # dt = seconds2DT(image["time"])
         eci2ecef = R.from_matrix(itrs.rotation_at(t))
         TPwgs = [x.reshape(TPheights.shape) for x in ecef2wgs84(eci2ecef.apply(TPpos.reshape(-1, 3)))]
         on_ref_grid["lat"], on_ref_grid["lon"] = [np.rad2deg(TPwgs[i]) for i in range(2)]
@@ -128,7 +127,7 @@ def TP_data(image, pointing, var, ny=10, cols=None, rows=None, planets_file=None
 def col_heights(image, x, pointing, ypixels=None, spline=False, splineTPpos=False):
     if ypixels is None:
         ypixels = np.arrange(image["NROW"])
-    d = image['EXPDate']
+    d = image['time']
     ts = load.timescale()
     t = ts.from_datetime(d)
     ecipos = image['afsGnssStateJ2000'][0:3]
@@ -138,7 +137,6 @@ def col_heights(image, x, pointing, ypixels=None, spline=False, splineTPpos=Fals
     ths = np.zeros_like(ypixels)
     TPpos = np.zeros((len(ypixels), 3))
     xdeg, ydeg = pointing.get_deg_map(image)[:, x, ypixels]
-    breakpoint()
     for iy, y in enumerate(ydeg):
         los = R.from_euler('XYZ', [0, y, xdeg], degrees=True).apply([1, 0, 0])
         ecivec = quat.apply(qprime.apply(los))
@@ -206,3 +204,25 @@ def get_deg_map(mdata, dist_data):
     xdeg = np.rad2deg(np.arctan(x_disp * (xx_full - 2047.0 / 2 - xdistortion.T)))
     ydeg = np.rad2deg(np.arctan(y_disp * (yy_full - 510.0 / 2 - ydistortion.T)))
     return np.stack([xdeg, ydeg], axis=0)
+
+
+def verify_channels(conf, metadata):
+    limb_channels = ["IR1", "IR2", "IR3", "IR4", "UV1", "UV2"]
+
+    num_chn = len(conf.CHANNELS)
+    num_meta = len(metadata)
+
+    if num_chn < 1:
+        raise ValueError("Configuration error: empty channel list!")
+    invalid_ch = set(conf.CHANNELS).difference(set(limb_channels))
+    if len(invalid_ch) > 0:
+        raise ValueError("Invalid channels {invalid_ch} specified!")
+    if num_meta < 1:
+        raise ValueError("No metadata found: were correct input files supplied and read?")
+    if num_meta > 1:
+        assert num_meta == num_chn, "Configuration requires separate input file for each channel" +\
+            f", but got {num_meta} input files for {num_chn} channels!"
+        assert set([metadata[i]["channel"][0] for i in range(num_meta)]) == set(conf.CHANNELS), \
+            "The input files do not match the channel specification in conf. file! Abort!"
+    if num_meta == 1 and conf.SEP_CHN_LOS:
+        assert num_chn == 1, f"Conf. requires {num_chn} channels in sep. input files, but got 1 file only!"

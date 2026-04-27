@@ -12,27 +12,33 @@ from mats_l2_processing.grid import Grid
 
 
 class Alt_along_3D_grid(Grid):
-    def __init__(self, metadata, conf, const, processes=1, verify=False):
-        super().__init__(metadata, conf, const, processes)
+    def __init__(self, all_metadata, conf, const, processes=1, verify=False, copy_points_from=None):
+        super().__init__(all_metadata, conf, const, processes)
+        metadata = all_metadata[0]
 
         # Initialize basic grid
-        row_range = (0, metadata["NROW"][0]) if conf.ROW_RANGE[0] < 0 else conf.ROW_RANGE
-        self.columns, self.rows = [np.arange(r[0], r[1], 1) for r in [conf.COL_RANGE, row_range]]
+        if copy_points_from is None:
+            self.ecef_to_local = self.generate_local_transform(metadata, self.timescale)
+            self.local_geoid_radius = geoid_radius(np.deg2rad(np.mean(metadata["TPlat"])))
+            ref_rad = self.local_geoid_radius + self.ref_alt
+            # self.edges = self._generate_grid(metadata, conf)
+            lims = self.grid_limits(metadata)
+            self.scalings = np.array([1e3, 1e3 / ref_rad, 1e3 / ref_rad])
+            self.offsets = np.zeros(3)
+            self.points = [self._set_points(name, conf, const, lims[i], scaling=self.scalings[i], offset=self.offsets[i])
+                           for i, name in enumerate(["ALT_GRID", "ACROSS_GRID", "ALONG_GRID"])]
+        else:
+            egrid = copy_points_from
+            self.ecef_to_local = egrid.ecef_to_local
+            self.local_geoid_radius = egrid.local_geoid_radius
+            self.scalings, self.offsets = egrid.scalings, egrid.offsets
+            self.points = egrid.points
 
-        self.ecef_to_local = self.generate_local_transform(metadata, self.timescale)
-        self.local_geoid_radius = geoid_radius(np.deg2rad(np.mean(metadata["TPlat"])))
-        ref_rad = self.local_geoid_radius + self.ref_alt
-        # self.edges = self._generate_grid(metadata, conf)
-        lims = self.grid_limits(metadata)
-        grid_proto = [make_grid_proto(conf.ALT_GRID, scaling=1e3),
-                      make_grid_proto(conf.ACROSS_GRID, scaling=1e3 / ref_rad),
-                      make_grid_proto(conf.ALONG_GRID, scaling=1e3 / ref_rad)]
-        self.edges = [grid_from_proto(p, l) for p, l in zip(grid_proto, lims)]
         # Set derived attributes
         self._set_derived(metadata, processes, True, verify)
 
         # Set geolocation attributes
-        self.alt = np.broadcast_to(self.centers[0][:, np.newaxis, np.newaxis], self.atm_shape[1:])
+        self.alt = np.broadcast_to(self.points[0][:, np.newaxis, np.newaxis], self.atm_shape[1:])
         self.lat, self.lon = self.get_lat_lon()
 
     def grid_limits(self, data):
@@ -40,7 +46,7 @@ class Alt_along_3D_grid(Grid):
         mid = int((data["size"] - 1) / 2)
         last = data["size"] - 1
 
-        mid_date = data['EXPDate'][mid]
+        mid_date = data['time'][mid]
         current_ts = self.timescale.from_datetime(mid_date)
         localR = np.linalg.norm(sfapi.wgs84.latlon(data["TPlat"][mid], data["TPlon"][mid],
                                                    elevation_m=0).at(current_ts).position.m)
@@ -66,7 +72,7 @@ class Alt_along_3D_grid(Grid):
         irow = self.rows[0]
         poslocal_sph = []
 
-        get_los_vars = ['channel', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'EXPDate', 'TPlat', 'TPlon']
+        get_los_vars = ['channel', 'NCSKIP', 'NCBINCCDColumns', 'NRSKIP', 'NRBIN', 'NCOL', 'time', 'TPlat', 'TPlon']
         # Which localR to use in get_step_local_grid?
         for idx in [first, mid, last]:
             image = get_image(data, idx, get_los_vars)
@@ -103,7 +109,7 @@ class Alt_along_3D_grid(Grid):
         if (nalong - 2) < 2:
             nalong = 2
 
-        return (min_alt - 10e3, self.top_alt + 10e3, nalt), (min_across - 0.1, max_across + 0.1, nacross), \
+        return (min_alt - 5e3, self.top_alt + 5e3, nalt), (min_across - 0.1, max_across + 0.1, nacross), \
             (min_along - 0.6, max_along + 0.6, nalong)
 
     def _get_steps_in_own_grid_simple(self, pos):
@@ -121,7 +127,7 @@ class Alt_along_3D_grid(Grid):
         return poslocal_sph
 
     def get_lat_lon(self):
-        acrr, alongg = np.meshgrid(*self.centers[1:], indexing="ij")
+        acrr, alongg = np.meshgrid(*self.points[1:], indexing="ij")
         # Cartesian unit vectors in directions of horizontal slice of local grid
         lxx, lyy, lzz = sph2cart(np.ones_like(acrr), acrr, alongg)
         glgrid = self.ecef_to_local.inv().apply(np.dstack((lxx.flatten(), lyy.flatten(), lzz.flatten()))[0, :, :])
@@ -132,12 +138,12 @@ class Alt_along_3D_grid(Grid):
 
     def write_grid_ncdf(self, fname, attributes={}):
         # Define dimensions
-        eff_radius = self.local_geoid_radius + np.mean(self.centers[0])
-        dim_pars = {"alt_coord": ("Altitude", "meter", self.centers[0]),
+        eff_radius = self.local_geoid_radius + np.mean(self.points[0])
+        dim_pars = {"alt_coord": ("Altitude", "meter", self.points[0]),
                     "acrosstrack_coord": ("Horizontal coordinate in the direction perpendicular to the orbital plane",
-                                          "meter", self.centers[1] * eff_radius),
+                                          "meter", self.points[1] * eff_radius),
                     "alongtrack_coord": ("Horizontal coordinate in the direction of the satellite track", "meter",
-                                         self.centers[2] * eff_radius),
+                                         self.points[2] * eff_radius),
                     "img_time": ("Acquisition time of individual MATS images", "Seconds since 2000.01.01 00:00 UTC",
                                  self.img_time),
                     "img_col": ("Column of (coadded) pixels in the image", None, self.columns),
@@ -145,13 +151,13 @@ class Alt_along_3D_grid(Grid):
                     "time": ("Valid time of L2 data", "Seconds since 2000.01.01 00:00 UTC",
                              self.valid_time * np.ones(1))}
         dims_4D = ("time", "alt_coord", "acrosstrack_coord", "alongtrack_coord")
-        #dims_2D = ("acrosstrack_coord", "alongtrack_coord")
+        # dims_2D = ("acrosstrack_coord", "alongtrack_coord")
 
         # Define coordinate variables
         ncvars = {"altitude": ("Altitude", "meter", self.alt, dims_4D),  # For compatibility with old scripts
                   "longitude": ("Longitude", "degree_east", self.lon, dims_4D),
-                  "latitude": ("Latitude", "degree_north", self.lat, dims_4D),
-                  "TPheight": ("Tangent point height", "meter", self.TP_heights, ("img_time", "img_col", "img_row"))}
+                  "latitude": ("Latitude", "degree_north", self.lat, dims_4D)}
+                  # "TPheight": ("Tangent point height", "meter", self.TP_heights, ("img_time", "img_col", "img_row"))}
 
         write_gen_ncdf(fname, dim_pars, ncvars, attributes)
 
@@ -162,14 +168,6 @@ class Alt_along_3D_grid(Grid):
             ncvars[f"{qty}{atm_suffix}"] = (f"{self.ncpar[qty][0]}{atm_suffix_long}", self.ncpar[qty][1], atm[i],
                                             dims)
         append_gen_ncdf(fname, ncvars)
-
-    def write_obs_ncdf(self, fname, obs, channels, obs_suffix="", obs_suffix_long="", attributes={}):
-        ncvars = {}
-        dims = ("img_time", "img_col", "img_row")
-        for i, chn in enumerate(channels):
-            ncvars[f"{chn}{obs_suffix}"] = (f"{self.ncpar[chn][0]}{obs_suffix_long}", self.ncpar[chn][1],
-                                            obs[i, :, :, :], dims)
-        append_gen_ncdf(fname, ncvars, attributes=attributes)
 
     def interpolate_from_3D(self, ext_coords, ext_data):
         # Prepare coordinates

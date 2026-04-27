@@ -2,6 +2,7 @@ import datetime as DT
 from multiprocessing import Pool
 import numpy as np
 from itertools import chain, repeat
+from scipy.sparse import coo_matrix
 
 
 def get_filter(channel):
@@ -37,10 +38,16 @@ def get_image(data, idx, var, size=None):
     return res
 
 
-def multiprocess(func, dataset, image_args, nproc, common_args, unzip=False, stack=False):
+def multiprocess(func, dataset, image_args, nproc, common_args, unzip=False, stack=False,
+                 numbers_only=False):
     assert nproc >= 1, "Invalid number of processes specified!"
-    size = dataset["size"]
-    images = [get_image(dataset, i, image_args, size=size) for i in range(size)]
+    if numbers_only:
+        size = dataset
+        images = list(range(size))
+    else:
+        size = dataset["size"]
+        images = [get_image(dataset, i, image_args, size=size) for i in range(size)]
+
     if nproc == 1:  # Serial processing (implemented separately to simplify debugging)
         res = []
         # if len(common_args) > 0:
@@ -79,6 +86,11 @@ def running_mean(data, hw):
 
 def center_grid(grid):
     return (grid[:-1] + grid[1:]) / 2
+
+
+def unnest(nested_list):
+    return chain.from_iterable(unnest(item) if isinstance(item, list) else [item]
+                               for item in nested_list)
 
 
 def print_times(times, titles):
@@ -253,3 +265,13 @@ def ecef2wgs84(pos):
     phi = np.arctan((z + ep_sq * z_0) / r)
     lambd = np.arctan2(y, x)
     return phi, lambd, h
+
+
+def valid_row(matrix, is_valid, is_sparse, factor=1.0):
+    if is_sparse:
+        assert matrix.shape[0] == 1, "The matrix must be a row vector!"
+        valid_idx = is_valid[matrix.col]
+        return coo_matrix((matrix.data[valid_idx], (matrix.row[valid_idx], matrix.col[valid_idx])),
+                          shape=matrix.shape).multiply(factor)
+    else:
+        return np.where(is_valid, matrix, 0.0).reshape(1, -1) * factor

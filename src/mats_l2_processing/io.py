@@ -21,7 +21,7 @@ def read_ncdf(fname, vnames, get_units=False):
 
 
 def read_L1_ncdf(filename, var=None, start_img=None, stop_img=None, start_time=None, stop_time=None,
-                 time_var='EXPDate', read_ncattrs=True):
+                 time_var='time', custom_time_format=None, read_ncattrs=True, center_times=False):
     res = {}
     with nc.Dataset(filename, 'r') as nf:
         # Read in global attributes
@@ -32,45 +32,63 @@ def read_L1_ncdf(filename, var=None, start_img=None, stop_img=None, start_time=N
             attrs = nf.ncattrs() if read_ncattrs else []
         for attr in attrs:
             res[attr] = nf.getncattr(attr)
+
+        # Handle time variable
+        tdata = nf[time_var]
+        assert len(nf[time_var].shape) == 1, f"Invalid time variable {time_var} selected."
+        if custom_time_format is not None:
+            assert len(custom_time_format) == 2 and len(custom_time_format) == 6, "Invalid custom_time_format!"
+            time_origin = DT.datetime(*custom_time_format[0], tzinfo=DT.timezone.utc)
+            time_step = custom_time_format[1]
+        elif hasattr(tdata, "units") and (tdata.units == "Seconds since 2000.01.01 00:00 UTC"):
+            time_origin = DT.datetime(2000, 1, 1, 0, 0, tzinfo=DT.timezone.utc)
+            time_step = 1
+        elif hasattr(tdata, "units") and (tdata.units == "nanoseconds since 2000-01-01"):
+            time_origin = DT.datetime(2000, 1, 1, 0, 0, tzinfo=DT.timezone.utc)
+            time_step = 1e-9
+        else:
+            ValueError(f"Invalid time variable {time_var}!")
+
+        time = time_origin + (time_step * tdata[:]) * DT.timedelta(0, 1)
         if (start_img is not None) or (stop_img is not None):
             start = 0 if start_img is None else start_img
             stop = size if stop_img is None else stop_img
         elif (start_time is not None) or (stop_time is not None):
-            assert len(nf[time_var].shape) == 1, f"Invalid time variable {time_var} selected."
-            time = DT.datetime(2000, 1, 1, 0, 0, tzinfo=DT.timezone.utc) +\
-                nf[time_var][:] * DT.timedelta(0, 1)
             start = 0 if start_time is None else np.nanargmin(np.abs(time - start_time))
             stop = size if stop_time is None else np.nanargmin(np.abs(time - stop_time)) + 1
-            print("start/stop from times")
         else:
             start, stop = 0, size
 
-        #real_stop = stop if stop >= 0 else len(time) + stop
-        #assert start < real_stop, f"The selected time interval has no images! Read data for {time[0]} to {time[-1]}"
-        #if start_time < time[0] - DT.timedelta(1, 0) or stop_time > time[-1] + DT.timedelta(1, 0):
-        #    print("WARNING: Data in the input file does not completely cover the selected time interval.")
+        assert stop > start, "Empty time interval selected for input data! Abort!"
 
+        res["time"] = time[start:stop]
+        res["time_s"] = time_step * tdata[start:stop]
+
+        # Handle remaining variables
         if var is None:
             var = nf.variables
+        #elif "afsTangentPointECEF" in nf.variables: # Handle legacy L1b file structure
+        #    var = list(set(var) - set(["TPECEFx", "TPECEFy", "TPECEFz"]))
+        #    var.append("afsTangentPointECEF")
 
         for name in var:
             v = nf[name]
-            if hasattr(v, "units") and (v.units == "Seconds since 2000.01.01 00:00 UTC"):
-                res[v.name] = DT.datetime(2000, 1, 1, 0, 0, tzinfo=DT.timezone.utc) +\
-                    v[start:stop, ...] * DT.timedelta(0, 1)
-                res[f"{v.name}_s"] = v[start:stop, ...]
-            elif hasattr(v, "units") and (v.units == "nanoseconds since 2000-01-01"):
-                res[v.name] = DT.datetime(2000, 1, 1, 0, 0, tzinfo=DT.timezone.utc) +\
-                    (v[start:stop, ...].data * 1e-9) * DT.timedelta(0, 1)
-                res[f"{v.name}_s"] = v[start:stop, ...]
-            else:
+            if name != time_var:
                 if len(v.dimensions) > 0:
                     res[name] = v[start:stop, ...]
                 else:
                     res[name] = np.array([v[:] for _ in range(stop - start)])
 
-        res["size"] = res[var[0]].shape[0]
-        print(var[0], start, stop)
+        #if "TPECEFx" not in var:
+        #    for i, name in enumerate(["TPECEFx", "TPECEFy", "TPECEFz"]):
+        #        res[name] = res["afsTangentPointECEF"][:, ]
+
+        if center_times:
+            res["time_s"] += res["TEXPMS"] * 5e-4
+            res["time"] = np.array([time + exposure * 5e-4 * DT.timedelta(0, 1)
+                                    for time, exposure in zip(res["time"], res["TEXPMS"])])
+
+        res["size"] = res["time"].shape[0]
         logging.info(f"Read {res['size']} images.")
     return res
 
@@ -119,7 +137,7 @@ def append_gen_ncdf(fname, var_spec, attributes={}, overwrite=False):
             nf.setncatts(attributes)
 
 
-def write_ncdf_L1b(pdata, outfile, channel, version, im_calibrated=True):
+def write_ncdf_L1b(pdata, outfile, channel, version, im_calibrated=True, var=None):
     with nc.Dataset(outfile, 'w') as nf:
         num_images = len(pdata)
         # Global parameters
@@ -158,7 +176,9 @@ def write_ncdf_L1b(pdata, outfile, channel, version, im_calibrated=True):
         handled_vars = list(nf.variables.keys())
         if not im_calibrated:
             handled_vars = handled_vars + ["ImageCalibrated", "CalibrationErrors", "BadColumns"]
-        for var in pdata.keys():
+
+        all_vars = pdata.keys() if var is None else var
+        for var in all_vars:
             if var not in handled_vars:
                 data = pdata[var].to_numpy()
                 ncdf_create_var(data, nf, var, ("num_images", ), type(data.flat[0]))
@@ -182,7 +202,7 @@ def ncdf_create_var(data, dset, name, dims, dtype, long_name=None, units=None):
         ncvar[:] = data
     elif type_id == 'timestamp':
         ncvar = dset.createVariable(name, 'f8', dims)
-        ncvar.units = "Seconds since 2000.01.01 00:00 UTC"
+        ncvar.units = "seconds since 2000.01.01 00:00 UTC"
         if dtype == np.datetime64:
             ncvar[:] = (data - np.datetime64("2000-01-01 00:00:00.0")) / np.timedelta64(1, "s")
         else:
@@ -269,5 +289,46 @@ def add_ncdf_vars(file, proto_var, new_vars, units=[]):
             if long_name is not None:
                 ncvar.long_name = long_name
             ncvar[:] = data
+            ncvar.units = nf[proto_var].units
         for v, unit in units:
             nf[v].units = unit
+
+
+def ncdf_filter_dim(ifile, fdim, keep_idx, ofile, vectorize_scalars=False, idx_type='explicit'):
+
+    with nc.Dataset(ifile, "r") as src, nc.Dataset(ofile, "w") as dst:
+        assert fdim in src.dimensions, f"The file {ifile} has no dimension {fdim}!"
+        if idx_type == 'interval':
+            assert len(keep_idx) == 2, "idx_type is 'interval', so keep_idx should have length 2 (start/end of intv.)"
+            keep_idx = range(keep_idx[0], keep_idx[1])
+        elif idx_type != 'explicit':
+            raise ValueError("idx_type must be 'explicit' or 'interval'!")
+
+        # Copy global attributes
+        dst.setncatts(src.__dict__)
+
+        # Copy dimensions
+        for name, dim in src.dimensions.items():
+            if name == fdim:  # the dimension you're filtering
+                dst.createDimension(name, len(keep_idx))
+            else:
+                dst.createDimension(name, len(dim) if not dim.isunlimited() else None)
+
+        # Copy variables
+        for name, var in src.variables.items():
+            if vectorize_scalars and len(var.dimensions) == 0:
+                dims = (fdim,)
+                vals = np.full(src.dimensions[fdim].size, var[:])
+            else:
+                dims = var.dimensions
+                vals = var[:]
+            dst.createVariable(name, var.datatype, dims)
+            dst[name].setncatts(var.__dict__)  # copy attributes
+
+            if fdim in var.dimensions:
+                axis = var.dimensions.index(fdim)
+                dst[name][:] = np.take(vals, keep_idx, axis=axis)
+            elif len(var.dimensions) == 0:
+                dst[name][0] = var[0]
+            else:
+                dst[name][:] = var[:]

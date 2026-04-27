@@ -76,7 +76,7 @@ def main():
     obs = fwdm.prepare_obs(conf, main_data, {"IR1": "IR1c", "IR2": "IR2c"})
 
     logging.info("Initializing inverse model...")
-    Sa_inv, terms = Sa_inv_multivariate((grid.centers), conf.SA_WEIGHTS, volume_factors=True,
+    Sa_inv, terms = Sa_inv_multivariate((grid.points), conf.SA_WEIGHTS, volume_factors=True,
                                         store_terms=False, var_scales=None)
     num_im_obs = len(grid.rows) * len(conf.CHANNELS)
     Se_inv = sp.diags(np.ones(num_im_obs), 0).astype('float32') / (conf.RAD_SCALE ** 2 * num_im_obs)

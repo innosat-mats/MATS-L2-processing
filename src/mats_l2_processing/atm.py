@@ -3,6 +3,7 @@ import netCDF4 as nc
 from re import sub
 from scipy.interpolate import LinearNDInterpolator, interpn
 from scipy.signal import savgol_filter
+from scipy.ndimage import gaussian_filter
 from os.path import expanduser
 
 from mats_l2_processing.util import running_mean, seconds2DT
@@ -56,7 +57,7 @@ class gridded_data():
             raise ValueError("gridded_data requires either grid or L2 ncdf file for initialization!")
         self.data = extend_previous.copy()
         if from_grid is not None:
-            self.centers = from_grid.centers
+            self.points = from_grid.points
             self.alt = from_grid.alt
             self.lat = from_grid.lat
             self.lon = from_grid.lon
@@ -67,14 +68,14 @@ class gridded_data():
                 self.lat = nf["lat"][:]
                 self.lon = nf["lon"][:]
                 self.valid_time = nf["time"][0]
-                self.centers = [nf[coord_name][:] for coord_name in nf["alt"].dimensions]
+                self.points = [nf[coord_name][:] for coord_name in nf["alt"].dimensions]
                 self.ncdf_file = from_L2_ncdf
                 for var in ncdf_preload:
                     self.data[var] = nf[var][:]
         self.shape = self.alt.shape
 
         methods = {"L2": self._L2, "jawara": self._model, "msis": self._model,
-                   "running_mean": self._running_mean, "savgol": self._savgol,
+                   "running_mean": self._running_mean, "savgol": self._savgol, "gaussian": self._gaussian,
                    "fill": self._fill, "eval": self._eval, "alt_taper": self._alt_taper}
         for names, method, gargs in spec:
             if method in methods.keys():
@@ -182,18 +183,35 @@ class gridded_data():
             res.append(data)
         return res
 
+    def _gaussian(self, method, gargs):
+        self._verify_arguments("gaussian", gargs, ["input", "sigma"])
+
+        res = []
+        for in_var in gargs["input"]:
+            data = self.data[in_var].copy()
+            data = gaussian_filter(data, gargs["sigma"], mode='nearest')
+            res.append(data)
+        return res
+
     def _alt_taper(self, method, gargs):
-        self._verify_arguments("fill", gargs, ["input", "boundary_alt", "scale_height", "reference"])
+        self._verify_arguments("fill", gargs, ["input", "boundary_alt", "scale_height", "reference", "bounds"])
         exponent = - (self.alt - gargs["boundary_alt"]) / gargs["scale_height"]
         factor = np.exp(np.where(exponent < 0.0, exponent, 0.0))
         if gargs["reference"] == "local":
-            return [qty * factor for qty in gargs["input"]]
+            res = [self.data[qty] * factor for qty in gargs["input"]]
         elif gargs["reference"] == "boundary":  # TODO: fix for other grids!
-            boundary_idx = np.argmin(np.abs(self.centers[0] - gargs["boundary_alt"]))
-            return [np.where(exponent < 0, self.data[qty][boundary_idx, :, :][np.newaxis, :, :] * factor,
+            boundary_idx = np.argmin(np.abs(self.points[0] - gargs["boundary_alt"]))
+            res = [np.where(exponent < 0, self.data[qty][boundary_idx, :, :][np.newaxis, :, :] * factor,
                              self.data[qty]) for qty in gargs["input"]]
         else:
             raise ValueError(f"alt_taper reference can be 'local' or 'boundary', not {gargs['reference']}!")
+
+        if gargs["bounds"] is None:
+            return res
+        else:
+            res = np.maximum(res, gargs["bounds"][0])
+            return np.minimum(res, gargs["bounds"][1])
+
 
     def _fill(self, method, gargs):
         self._verify_arguments("fill", gargs, ["value"])
