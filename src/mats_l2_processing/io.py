@@ -3,6 +3,7 @@ import pandas
 import datetime as DT
 import netCDF4 as nc
 import logging
+import xarray as xr
 from mats_l2_processing.util import DT2seconds, geoid_radius
 
 
@@ -294,10 +295,10 @@ def add_ncdf_vars(file, proto_var, new_vars, units=[]):
             nf[v].units = unit
 
 
-def ncdf_filter_dim(ifile, fdim, keep_idx, ofile, vectorize_scalars=False, idx_type='explicit'):
+def ncdf_filter_dim(ifile, fdim, keep_idx, ofile, vectorize_scalars=False, idx_type='explicit', unlimited=False):
 
     with nc.Dataset(ifile, "r") as src, nc.Dataset(ofile, "w") as dst:
-        assert fdim in src.dimensions, f"The file {ifile} has no dimension {fdim}!"
+        assert fdim in src.dimensions, f"The file {ifile} hares['alts']s no dimension {fdim}!"
         if idx_type == 'interval':
             assert len(keep_idx) == 2, "idx_type is 'interval', so keep_idx should have length 2 (start/end of intv.)"
             keep_idx = range(keep_idx[0], keep_idx[1])
@@ -310,7 +311,8 @@ def ncdf_filter_dim(ifile, fdim, keep_idx, ofile, vectorize_scalars=False, idx_t
         # Copy dimensions
         for name, dim in src.dimensions.items():
             if name == fdim:  # the dimension you're filtering
-                dst.createDimension(name, len(keep_idx))
+                length = None if unlimited else len(keep_idx)
+                dst.createDimension(name, length)
             else:
                 dst.createDimension(name, len(dim) if not dim.isunlimited() else None)
 
@@ -332,3 +334,41 @@ def ncdf_filter_dim(ifile, fdim, keep_idx, ofile, vectorize_scalars=False, idx_t
                 dst[name][0] = var[0]
             else:
                 dst[name][:] = var[:]
+
+
+def read_nadir_gl_zarr(files, time_range=None, min_sza=100.0):
+    if time_range is not None:
+        time_range = [DT2seconds(x) for x in time_range]
+    res = {}
+    alt = list(files.keys())
+    alt.sort()
+    res["alt"] = np.array(alt)
+    for i, alt in enumerate(res["alt"]):
+        with xr.open_zarr(files[alt]) as ds:
+            if i == 0:
+                time_s = (ds["im"].coords["time"].to_numpy() - np.datetime64('2000-01-01T00:00:00')) / \
+                    np.timedelta64(1, 's')
+                valid = ds["sza"][:].to_numpy() > min_sza
+                if time_range is not None:
+                    valid = np.logical_and(valid, time_s - time_range[0] > 0)
+                    valid = np.logical_and(valid, time_s - time_range[1] < 0)
+
+                numimg = np.sum(valid)
+                if numimg < 1:
+                   raise ValueError("Empty nadir image set!")
+                res["time"] = time_s[valid]
+                res["sza"] = ds["sza"][valid]
+
+                og_im_shape = ds["im"].shape
+                coord_shape = (len(res["alt"]), numimg, og_im_shape[1], og_im_shape[2])
+                res["lon"], res["lat"] = [np.empty(coord_shape) for _ in range(2)]
+                res["img"] = ds["im"].to_numpy()[valid, :, :]
+            else:
+                new_time_s = (ds["im"].coords["time"].to_numpy() - np.datetime64('2000-01-01T00:00:00')) / \
+                    np.timedelta64(1, 's')
+                if np.max(new_time_s - time_s) > 1e-3:
+                    raise ValueError("Zarr archives for different geolocation altitudes do not have the same images!")
+
+            for coord in ["lon", "lat"]:
+                res[coord][i, ...] = ds[coord].to_numpy()[valid, :, :]
+    return res

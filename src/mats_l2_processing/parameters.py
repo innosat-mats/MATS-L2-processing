@@ -84,6 +84,11 @@ def make_conf(conf_type, conf_file, args):
     # const["heights"]["POINTING_DATA"].remove("CCDSEL")
     # const["heights"]["POINTING_DATA"].remove("time")
 
+    # Configuration for nadir tomography
+    req["nadir_tomo"] = ["RAD_SCALE", "SA_WEIGHTS", "CG_ATOL", "CG_RTOL", "CG_MAX_STEPS",
+                         "NADIR_DENOISE", "NADIR_DENOISE_HW", "NADIR_DENOISE_THR", "PERC_FILTER"]
+    const["nadir_tomo"] = {"DUMMY": 0.0}
+
     # Default values for all of the above
     defaults = {"SA_WEIGHTS_1D_APR": [1e-1, 1e3],
                 "LM_IT_MAX": 9,
@@ -125,6 +130,11 @@ def make_conf(conf_type, conf_file, args):
                 "SCAT_TRANSFER": False,
                 "SEP_IRB_DESTRAY": False,
                 "EXP_ALT_AXIS": -1,
+                "NADIR_GRID_TYPE": 'lonlat',
+                "NADIR_DENOISE": False,
+                "NADIR_DENOISE_HW": [2, 2, 2],
+                "NADIR_DENOISE_THR": 3,
+                "PERC_FILTER": -1,
                 }
 
     if conf_file is not None:
