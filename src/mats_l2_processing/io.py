@@ -336,7 +336,7 @@ def ncdf_filter_dim(ifile, fdim, keep_idx, ofile, vectorize_scalars=False, idx_t
                 dst[name][:] = var[:]
 
 
-def read_nadir_gl_zarr(files, time_range=None, min_sza=100.0):
+def read_nadir_gl_zarr(files, time_range=None, min_sza=100.0, perc=None):
     if time_range is not None:
         time_range = [DT2seconds(x) for x in time_range]
     res = {}
@@ -363,6 +363,8 @@ def read_nadir_gl_zarr(files, time_range=None, min_sza=100.0):
                 coord_shape = (len(res["alt"]), numimg, og_im_shape[1], og_im_shape[2])
                 res["lon"], res["lat"] = [np.empty(coord_shape) for _ in range(2)]
                 res["img"] = ds["im"].to_numpy()[valid, :, :]
+                if perc is not None:
+                    res["perc"] = np.percentile(ds["im"].to_numpy(), perc, axis=0)
             else:
                 new_time_s = (ds["im"].coords["time"].to_numpy() - np.datetime64('2000-01-01T00:00:00')) / \
                     np.timedelta64(1, 's')

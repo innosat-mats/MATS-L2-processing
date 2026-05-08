@@ -89,7 +89,11 @@ class Nadir_grid(ABC):
         while len(img_jacs) > 0:
             alts_jacs.append(sp.hstack([img_jacs.pop(0) for _ in range(self.nalt)]))
 
-        return sp.vstack(alts_jacs).tocsr()
+        jac = sp.vstack(alts_jacs)
+        valid_points = np.zeros(self.npoints)
+        valid_points[np.unique(jac.col)] = 1
+
+        return jac.tocsr(), valid_points.reshape(self.atm_shape)
 
     def vec2atm(self, vec):
         return vec.reshape(self.atm_shape) * self.scales[0]
@@ -108,7 +112,7 @@ class Nadir_grid_lonlat(Nadir_grid):
         for coord in cnames:
             lims = (np.min(nadir_data[coord]), np.max(nadir_data[coord]))
             ref_img = nadir_data[coord][0, 0, :, :]
-            im_step = max([np.mean(np.diff(ref_img, axis=i)) for i in range(2)])
+            im_step = max([np.abs(np.mean(np.diff(ref_img, axis=i))) for i in range(2)])
             self.points.append(np.arange(lims[0] - im_step * 1.1, lims[1] + im_step * 1.1, im_step))
 
         self.atm_shape = tuple([len(x) for x in self.points])

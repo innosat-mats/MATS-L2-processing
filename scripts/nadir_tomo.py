@@ -49,15 +49,17 @@ def main():
         time_range = None
 
     logging.info("Loading and processing input data...")
-    nadir_data = read_nadir_gl_zarr(files, time_range=time_range)
+    nadir_data = read_nadir_gl_zarr(files, time_range=time_range,
+                                    perc=(None if conf.PERC_FILTER < 0 else conf.PERC_FILTER))
     if args.mask:
         mask = np.flip(np.swapaxes(np.load(args.mask)[args.mask_var], 0, 1), axis=0)
     else:
         mask = None
     if conf.PERC_FILTER > 0:
-        hot_pix = np.percentile(nadir_data["img"], conf.PERC_FILTER, axis=0)
-        nadir_data["img"] -= hot_pix[np.newaxis, :, :]
-        hot_pix = np.swapaxes(hot_pix, 0, 1)
+        nadir_data["img"] -= nadir_data["perc"][np.newaxis, :, :]
+        hot_pix = np.swapaxes(nadir_data["perc"], 0, 1)
+    else:
+        hot_pix = None
     if conf.NADIR_DENOISE:
         nadir_data["img"] = denoise(nadir_data["img"], conf.NADIR_DENOISE_HW, conf.NADIR_DENOISE_THR)
 
@@ -72,7 +74,7 @@ def main():
     Se_inv = sp.diags(np.ones((grid.num_obs)), 0).astype('float32') / (conf.RAD_SCALE ** 2 * len(fwdm.channels))
 
     logging.info("Calculating jacobian...")
-    jac = grid.calc_jacobian(args.processes)
+    jac, valid_points = grid.calc_jacobian(args.processes)
 
     logging.info("Solving...")
     obs_data = fwdm.prepare_obs(nadir_data["img"])
@@ -81,7 +83,7 @@ def main():
     # breakpoint()
     solver = Linear_solver(fwdm, obs_data, conf, Sa_inv, Se_inv, np.zeros(grid.atm_shape), Sa_terms=terms)
     sol = solver.solve(args.processes, jac=jac, fx=np.zeros_like(obs_data))
-    grid.write_nadir_L2_ncdf(obs_data, sol, "L2_nadir.nc", mask=True, hot_pix=hot_pix)
+    grid.write_nadir_L2_ncdf(obs_data, np.where(valid_points, sol, np.nan), "L2_nadir.nc", mask=True, hot_pix=hot_pix)
 
 
 if __name__ == "__main__":
