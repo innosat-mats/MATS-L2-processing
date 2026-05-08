@@ -85,7 +85,7 @@ def make_conf(conf_type, conf_file, args):
     # const["heights"]["POINTING_DATA"].remove("time")
 
     # Configuration for nadir tomography
-    req["nadir_tomo"] = ["RAD_SCALE", "SA_WEIGHTS", "CG_ATOL", "CG_RTOL", "CG_MAX_STEPS",
+    req["nadir_tomo"] = ["RAD_SCALE", "SA_WEIGHTS", "CG_ATOL", "CG_RTOL", "CG_MAX_STEPS", "NADIR_SAMPLING_FACTOR",
                          "NADIR_DENOISE", "NADIR_DENOISE_HW", "NADIR_DENOISE_THR", "PERC_FILTER"]
     const["nadir_tomo"] = {"DUMMY": 0.0}
 
@@ -135,6 +135,7 @@ def make_conf(conf_type, conf_file, args):
                 "NADIR_DENOISE_HW": [2, 2, 2],
                 "NADIR_DENOISE_THR": 3,
                 "PERC_FILTER": -1,
+                "NADIR_SAMPLING_FACTOR": 1.0,
                 }
 
     if conf_file is not None:

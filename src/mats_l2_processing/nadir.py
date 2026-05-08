@@ -108,12 +108,14 @@ class Nadir_grid_lonlat(Nadir_grid):
         self.alt = nadir_data["alt"]
         self.nalt = len(self.alt)
         self.points = [self.alt]
+        self.sampling_factor = conf.NADIR_SAMPLING_FACTOR
         cnames = ["lon", "lat"]
         for coord in cnames:
             lims = (np.min(nadir_data[coord]), np.max(nadir_data[coord]))
             ref_img = nadir_data[coord][0, 0, :, :]
             im_step = max([np.abs(np.mean(np.diff(ref_img, axis=i))) for i in range(2)])
-            self.points.append(np.arange(lims[0] - im_step * 1.1, lims[1] + im_step * 1.1, im_step))
+            self.points.append(np.arange(lims[0] - im_step * 1.1, lims[1] + im_step * 1.1,
+                                         im_step * self.sampling_factor))
 
         self.atm_shape = tuple([len(x) for x in self.points])
         self.lon = np.broadcast_to(self.points[1][np.newaxis, :, np.newaxis], self.atm_shape)

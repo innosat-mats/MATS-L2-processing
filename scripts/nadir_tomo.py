@@ -56,7 +56,13 @@ def main():
     else:
         mask = None
     if conf.PERC_FILTER > 0:
-        nadir_data["img"] -= nadir_data["perc"][np.newaxis, :, :]
+        hot_pix = nadir_data["perc"]
+        if args.mask:
+            mean = np.nanmean(np.where(mask.T, hot_pix, np.nan))
+        else:
+            mean = hot_pix.mean()
+        hot_pix -= mean
+        nadir_data["img"] -= hot_pix[np.newaxis, :, :]
         hot_pix = np.swapaxes(nadir_data["perc"], 0, 1)
     else:
         hot_pix = None
