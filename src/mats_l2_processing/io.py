@@ -298,7 +298,7 @@ def add_ncdf_vars(file, proto_var, new_vars, units=[]):
 def ncdf_filter_dim(ifile, fdim, keep_idx, ofile, vectorize_scalars=False, idx_type='explicit', unlimited=False):
 
     with nc.Dataset(ifile, "r") as src, nc.Dataset(ofile, "w") as dst:
-        assert fdim in src.dimensions, f"The file {ifile} hares['alts']s no dimension {fdim}!"
+        assert fdim in src.dimensions, f"The file {ifile} has no dimension {fdim}!"
         if idx_type == 'interval':
             assert len(keep_idx) == 2, "idx_type is 'interval', so keep_idx should have length 2 (start/end of intv.)"
             keep_idx = range(keep_idx[0], keep_idx[1])
