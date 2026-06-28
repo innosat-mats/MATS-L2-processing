@@ -11,7 +11,7 @@ def make_conf(conf_type, conf_file, args):
     GEN_RET_VARS = ['START_TIME', 'STOP_TIME', 'CHANNELS', "SA_WEIGHTS", "RET_QTY", "AUX_QTY", "EPSILON_WEIGHTS",
                     "TP_ALT_RANGE", "SCALES", "BOUNDS", "RAD_SCALE", "INTERPOLATOR", "RET_ALT_RANGE", "CG_ATOL",
                     "CG_RTOL", "CG_MAX_STEPS", "TOP_ALT", "STEP_SIZE", "COL_RANGE", "ROW_RANGE", "RT_DATA_FILE",
-                    "GRIDDED_PRE", "NCDF_OBS_FACTOR"]
+                    "GRIDDED_PRE", "NCDF_OBS_FACTOR", "STRICT_ALONGTRACK", "CENTRAL_COLUMN"]
     LM_VARS = ["LM_IT_MAX", "LM_PAR_0", "LM_FAC", "LM_MAX_FACTS_PER_ITER", "CONV_CRITERION"]
     APR_1D_VARS = ["SA_WEIGHTS_1D_APR", "CHANNEL_1D_APR", "MEDCOLS_1D_APR", "GRIDDED_PRE_1D"]
 
@@ -28,15 +28,24 @@ def make_conf(conf_type, conf_file, args):
 
     # Various approximate constants for simple estimations needed in the code
     SAT_SPEED_APPROX = 7.55  # km/s
+    MEAN_EARTH_RADIUS = 6371008.8   # m
 
     # -------------------------------------------------------------------------------------------------------------
 
     # Configuration for temperature iterative solver
     const["iter_T"] = {"NEEDED_DATA": CCD_VARS + ATT_VARS + TP_VARS, "TP_VARS": CCD_VARS + ATT_VARS, "ncpar": ncpar,
-                       "POINTING_DATA": ATT_VARS + CCD_VARS, "sat_speed_approx": SAT_SPEED_APPROX}
+                       "POINTING_DATA": ATT_VARS + CCD_VARS, "sat_speed_approx": SAT_SPEED_APPROX, "NOMINAL_IMG_STEP": 6,
+                       "MEAN_EARTH_RADIUS": MEAN_EARTH_RADIUS}
     req["iter_T"] = ['ALT_GRID', 'ALONG_GRID', 'ACROSS_GRID', "ASPECT_RATIO", "SEP_CHN_LOS", "OBS_SRC_VAR",
-                     "DISTORTION_CORRECTION", "DISTORTION_DATA", "GEOLOCATE_1D_FROM_TP", "EXP_ALT_AXIS"] + \
-        GEN_RET_VARS + LM_VARS + APR_1D_VARS
+                     "DISTORTION_CORRECTION", "DISTORTION_DATA", "GEOLOCATE_1D_FROM_TP", "TOMO_PADDING_IMG",
+                     "EXP_ALT_AXIS"] + GEN_RET_VARS + LM_VARS + APR_1D_VARS
+
+    # Configuration for grid calculation
+    const["grid"] = {"NEEDED_DATA": CCD_VARS + ATT_VARS + TP_VARS, "TP_VARS": CCD_VARS + ATT_VARS,
+                     "ncpar": ncpar, "POINTING_DATA": ATT_VARS + CCD_VARS, "sat_speed_approx": SAT_SPEED_APPROX,
+                     "NOMINAL_IMG_STEP": 6, "MEAN_EARTH_RADIUS": MEAN_EARTH_RADIUS}
+    req["grid"] = ['ALT_GRID', 'ALONG_GRID', 'ACROSS_GRID', "ASPECT_RATIO", "OBS_SRC_VAR",
+                   "DISTORTION_CORRECTION", "DISTORTION_DATA", "TOMO_PADDING_IMG", "SEP_CHN_LOS"] + GEN_RET_VARS
 
     # Configuration for linear
     const["linear_1D"] = const["iter_T"].copy()
@@ -136,6 +145,9 @@ def make_conf(conf_type, conf_file, args):
                 "NADIR_DENOISE_THR": 3,
                 "PERC_FILTER": -1,
                 "NADIR_SAMPLING_FACTOR": 1.0,
+                "STRICT_ALONGTRACK": False,
+                "CENTRAL_COLUMN": 22,
+                "TOMO_PADDING_IMG": 10,
                 }
 
     if conf_file is not None:

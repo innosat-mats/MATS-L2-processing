@@ -202,7 +202,7 @@ class Grid(ABC):
         observation_normal = observation_normal / np.linalg.norm(observation_normal)  # normalize vector
 
         posecef_mid_unit = posecef_mid / np.linalg.norm(posecef_mid)  # unit vector for central position
-        ecef_to_local = R.align_vectors([[1, 0, 0], [0, 1, 0]], [posecef_mid_unit, observation_normal])[0]
+        ecef_to_local = R.align_vectors([[1, 0, 0], [0, 1, 0]], [posecef_mid_unit, -observation_normal])[0]
         return ecef_to_local
 
     def _generate_steps(self, localR, satpos, losvec):
@@ -220,7 +220,7 @@ class Grid(ABC):
         distance_top_2 = (-b + root) / 2
         return [distance_top_1, distance_top_2]
 
-    def _set_points(self, name, conf, const, lims, scaling=1.0, offset=0.0):
+    def _set_points(self, name, conf, const, lims=None, scaling=1.0, offset=0.0):
         spec = getattr(conf, name, None)
         if (type(spec) is not dict) or ("method" not in spec.keys()):
             raise ValueError(f"Configuration variable {name} must be a dictionary with a 'method' key!")

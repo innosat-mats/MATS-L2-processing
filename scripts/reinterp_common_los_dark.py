@@ -16,8 +16,7 @@ saa = np.logical_and(np.logical_and(IR1d["satlat"] > -50, IR1d["satlat"] < 0),
                      np.logical_and(IR1d["satlon"] > -90, IR1d["satlon"] < 40))
 valid = np.logical_and(IR1d["TPsza"] > 100, np.logical_not(saa))
 
-
-valid, IR2idx = find_images(IR1d["time_s"], valid, [IR2d["time_s"]])
+valid, IR2idx = find_images(IR1d["time_s"], [IR2d["time_s"]], valid_ref=valid)
 
 pointing = Pointing([IR1d, IR2d], conf, const)
 deg_maps = [np.swapaxes(pointing.chn_map(chn=chn), 0, 2) for chn in ["IR1", "IR2"]]

@@ -6,7 +6,7 @@ from scipy.sparse import coo_matrix
 
 
 def get_filter(channel):
-    filters = {"IR1": 1, "IR2": 4, "IR3": 3, "IR4": 2, "UV1": 5, "UV2": 6, "all": -1}
+    filters = {"IR1": 1, "IR2": 4, "IR3": 3, "IR4": 2, "UV1": 5, "UV2": 6, "all": -1, "NADIR": 7}
     try:
         filt = filters[channel]
     except Exception:
@@ -45,7 +45,7 @@ def multiprocess(func, dataset, image_args, nproc, common_args, unzip=False, sta
         size = dataset
         images = list(range(size))
     else:
-        size = dataset["size"]
+        size = dataset["size"] if "size" in dataset.keys() else len(dataset) 
         images = [get_image(dataset, i, image_args, size=size) for i in range(size)]
 
     if nproc == 1:  # Serial processing (implemented separately to simplify debugging)
@@ -244,7 +244,7 @@ def ecef2wgs84(pos):
     f = 1 / 298.257223563
     b = a * (1 - f)
 
-    x, y, z = [pos[:, k] for k in range(3)]
+    x, y, z = [pos[:, k].astype(np.float64) for k in range(3)]
 
     # calculations:
     r = np.sqrt(x**2 + y**2)
@@ -275,3 +275,11 @@ def valid_row(matrix, is_valid, is_sparse, factor=1.0):
                           shape=matrix.shape).multiply(factor)
     else:
         return np.where(is_valid, matrix, 0.0).reshape(1, -1) * factor
+
+
+def bin_flags(arr):
+    res = np.empty(arr.shape + (16,))
+    with np.nditer(arr, flags=['multi_index']) as it:
+        for x in it:
+            res[*it.multi_index, :] = [int(v) for v in f"{x:016b}"]
+    return res

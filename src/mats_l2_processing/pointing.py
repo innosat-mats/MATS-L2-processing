@@ -1,6 +1,6 @@
 import numpy as np
 from mats_l2_processing.io import read_ncdf
-from mats_l2_processing.util import ecef2wgs84, seconds2DT
+from mats_l2_processing.util import ecef2wgs84, seconds2DT, multiprocess
 
 from scipy.interpolate import RegularGridInterpolator, CubicSpline, bisplev
 from scipy.optimize import minimize_scalar
@@ -58,27 +58,75 @@ def sparse_tp_data(image, deg_map, nx=5, ny=10):
     TPheights = np.empty_like(xxpixels)
     TPpos = np.empty(tuple(list(xxpixels.shape) + [3]))
     with np.nditer([xxdeg, yydeg], flags=["multi_index"]) as it:
+        eci2ecef = R.from_matrix(itrs.rotation_at(t))
         for xx, yy in it:
             los = R.from_euler('XYZ', [0, yy, xx], degrees=True).apply([1, 0, 0])
             ecivec = quat.apply(qprime.apply(los))
             tangent = findtangent(t, ecipos, ecivec)
             TPheights[*it.multi_index] = tangent.fun
-            TPpos[*it.multi_index, :] = ecipos + tangent.x * ecivec
+            TPpos[*it.multi_index, :] = eci2ecef.apply(ecipos + tangent.x * ecivec)
 
     return xpixels, ypixels, TPheights, TPpos
 
 
-def faster_heights(image, pointing, ny=5, cols=None, rows=None):
+def center_tp_pos_ecef_image(image, cargs):
+    # cargs is dict with deg_map, central col. number (c_col), and ref. altitude (ref_alt)
+    ypixels = np.append(np.arange(0, image['NROW'] - 1, cargs["ny"]), image["NROW"] - 1)
+    t = load.timescale().from_datetime(image['time'])
+    ecipos = image['afsGnssStateJ2000'][0:3]
+    quat = R.from_quat(np.roll(image['afsAttitudeState'], -1))
+    qprime = R.from_quat(image['qprime'])
+    eci_to_ecef = R.from_matrix(itrs.rotation_at(t))
+    xdeg, ydeg = [cargs["deg_map"][c, cargs["c_col"], ypixels] for c in range(2)]
+
+    TPheights = np.empty_like(xdeg)
+    TPpos = np.empty(xdeg.shape + (3,))
+    for i in range(len(xdeg)):
+        los = R.from_euler('XYZ', [0, ydeg[i], xdeg[i]], degrees=True).apply([1, 0, 0])
+        ecivec = quat.apply(qprime.apply(los))
+        tangent = findtangent(t, ecipos, ecivec)
+        TPheights[i] = tangent.fun
+        TPpos[i, :] = ecipos + tangent.x * ecivec
+
+    idx = np.searchsorted(TPheights, cargs["ref_alt"]) - 1
+    theta = (cargs["ref_alt"] - TPheights[idx]) / (TPheights[idx + 1] - TPheights[idx])
+    res = eci_to_ecef.apply(TPpos[idx, :] * theta + TPpos[idx + 1, :] * (1 - theta))
+    return res
+
+
+def calc_track_ecef(metadata, deg_map, nproc, image_args, c_col=23, ny=10, ref_alt=8e4):
+    common_args = {"deg_map": deg_map, "c_col": c_col, "ny": ny, "ref_alt": ref_alt}
+    return multiprocess(center_tp_pos_ecef_image, metadata, image_args, nproc, common_args, stack=True)
+
+
+def faster_heights(image, pointing, ny=5, cols=None, rows=None, full_coords=False, deg_map=None):
     fullxgrid = np.arange(image['NCOL'] + 1) if cols is None else cols
     fullygrid = np.arange(image['NROW']) if rows is None else rows
     if cols is not None and len(cols) > 1:
         nx = np.minimum(5, int(np.floor((image['NCOL'] + 1) / 4)))
     else:
         nx = int(np.floor(image['NCOL'] / 2))
-    xpixels, ypixels, TPheights, TPpos = sparse_tp_data(image, pointing.get_deg_map(image), nx=nx, ny=ny)
+
+    if pointing is None:
+        if deg_map is None:
+            raise ValueError("Neither pointing object or explicit deg_map was provided!")
+        dmap = deg_map
+    else:
+        dmap = pointing.get_deg_map(image)
+
+    xpixels, ypixels, TPheights, TPpos = sparse_tp_data(image, dmap, nx=nx, ny=ny)
+
     interpolator = RegularGridInterpolator((xpixels, ypixels), TPheights, method='cubic')
     XX, YY = np.meshgrid(fullxgrid, fullygrid, sparse=True)
-    return interpolator((XX, YY))
+    res = interpolator((XX, YY))
+
+    if full_coords:
+        res = {"TPheightPixel": res}
+        for i, vname in enumerate(["TPECEFx", "TPECEFy", "TPECEFz"]):
+            interpolator = RegularGridInterpolator((xpixels, ypixels), TPpos[..., i], method='cubic')
+            res[vname] = interpolator((XX, YY))
+
+    return res
 
 
 def TP_data(image, pointing, var, ny=10, cols=None, rows=None, planets_file=None):
@@ -104,8 +152,9 @@ def TP_data(image, pointing, var, ny=10, cols=None, rows=None, planets_file=None
         timescale = load.timescale()
         t = timescale.from_datetime(image["time"])
         # dt = seconds2DT(image["time"])
-        eci2ecef = R.from_matrix(itrs.rotation_at(t))
-        TPwgs = [x.reshape(TPheights.shape) for x in ecef2wgs84(eci2ecef.apply(TPpos.reshape(-1, 3)))]
+        # eci2ecef = R.from_matrix(itrs.rotation_at(t))
+        # TPwgs = [x.reshape(TPheights.shape) for x in ecef2wgs84(eci2ecef.apply(TPpos.reshape(-1, 3)))]
+        TPwgs = [x.reshape(TPheights.shape) for x in ecef2wgs84(TPpos.reshape(-1, 3))]
         on_ref_grid["lat"], on_ref_grid["lon"] = [np.rad2deg(TPwgs[i]) for i in range(2)]
 
         if "sza" in var:

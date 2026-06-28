@@ -5,6 +5,7 @@ import netCDF4 as nc
 import logging
 import xarray as xr
 from mats_l2_processing.util import DT2seconds, geoid_radius
+from mats_l2_processing.zarr_variables import zarr_L1b_variables
 
 
 def read_ncdf(fname, vnames, get_units=False):
@@ -138,7 +139,75 @@ def append_gen_ncdf(fname, var_spec, attributes={}, overwrite=False):
             nf.setncatts(attributes)
 
 
-def write_ncdf_L1b(pdata, outfile, channel, version, im_calibrated=True, var=None):
+def write_ncdf_L1b_zarr_format(pdata, outfile, channel, version, extra_vars=None):
+    NCDF_TYPES = {np.int8: 'i1', np.int16: 'i2', np.int32: 'i4', np.int64: 'i8',
+                  np.float32: 'f4', np.float64: 'f8', np.bool_: 'i1', str: 'str',
+                  pandas._libs.tslibs.timestamps.Timestamp: 'timestamp',
+                  np.datetime64: 'timestamp', np.ndarray: 'ndarray'}
+
+    with nc.Dataset(outfile, 'w') as nf:
+        # num_images = len(pdata)
+        # Global parameters
+        nf.date_created = DT.datetime.now().isoformat()
+        nf.date_modified = DT.datetime.now().isoformat()
+        nf.channel = channel
+        nf.data_version = version
+
+        # Create dimensions and dimension variables
+        dimensions = {"time": None, "im_row": pdata["NROW"][0], "im_col": pdata["NCOL"][0] + 1,
+                      "quaternion": 4, "gnss_state": 6}
+        for dim, size in dimensions.items():
+            nf.createDimension(dim, size)
+            if size is None:
+                continue
+            ncvar = nf.createVariable(dim, 'i4', (dim,))
+            ncvar[:] = np.arange(size)
+
+        # Set the values for variables that need special handling
+        special_variables = {"time": ((pdata["EXPDate"].to_numpy().astype(np.datetime64) - np.datetime64("2000-01-01T00:00:00.0")) / np.timedelta64(1, "s") * 1e9).astype(np.int64),
+                             "CalibrationErrors": np.stack([np.stack(pdata["CalibrationErrors"][i], axis=0)
+                                                           for i in range(len(pdata["CalibrationErrors"]))], axis=0),
+                             }
+        if extra_vars is not None:
+            special_variables.update(extra_vars)
+
+        # Set variables
+
+        for name, info in zarr_L1b_variables().items():
+            if name in special_variables.keys():
+                vdata = special_variables[name]
+            else:
+                if info.get("skip", False) or name in dimensions.keys():
+                    continue
+                if len(info["dims"]) > 1:
+                    vdata = np.stack(pdata[name].to_numpy(), axis=0)
+                else:
+                    vdata = pdata[name].to_numpy()
+            if len(info["dims"]) == 0:
+                dtype = NCDF_TYPES[type(vdata)]
+                if dtype == 'ndarray':
+                    dtype = NCDF_TYPES[type(vdata[0])]
+                ncvar = nf.createVariable(name, dtype, ())
+                for k in range(len(vdata)):
+                    ncvar[k] = vdata[k]
+            else:
+                ncvar = nf.createVariable(name, NCDF_TYPES[vdata.dtype.type], info["dims"])
+                ncvar[:] = vdata
+
+            ncvar.long_name = info["long_name"]
+            ncvar.units = info["units"]
+
+
+def write_ncdf_L1(pdata, outfile, channel, version, image=True, var=None, level="1b"):
+    if level == "1a":
+        imName = "IMAGE"
+        calErrors = False
+    elif level == "1b":
+        imName = "ImageCalibrated"
+        calErrors = True
+    else:
+        raise ValueError("Invalid data level selected!")
+
     with nc.Dataset(outfile, 'w') as nf:
         num_images = len(pdata)
         # Global parameters
@@ -157,26 +226,29 @@ def write_ncdf_L1b(pdata, outfile, channel, version, im_calibrated=True, var=Non
             ncdf_create_var(np.arange(param[0]), nf, dim, (dim, ), np.int16, long_name=param[1])
 
         # Create variable for ImageCalibrated
-        if im_calibrated:
-            ncdf_create_var(np.stack(pdata["ImageCalibrated"].to_numpy(), axis=0),
-                            nf, "ImageCalibrated", ("num_images", "im_row", "im_col"), np.float32)
+        if image:
+            ncdf_create_var(np.stack(pdata[imName].to_numpy(), axis=0),
+                            nf, imName, ("num_images", "im_row", "im_col"), np.float32)
 
         # Create variable for CalibrationErrors
-        error = np.stack([np.stack(pdata["CalibrationErrors"][i], axis=0)
-                          for i in range(len(pdata["CalibrationErrors"]))], axis=0)
-        ncdf_create_var(error, nf, "CalibrationErrors", ("num_images", "im_row", "im_col"), np.int16)
+        if calErrors:
+            error = np.stack([np.stack(pdata["CalibrationErrors"][i], axis=0)
+                              for i in range(len(pdata["CalibrationErrors"]))], axis=0)
+            ncdf_create_var(error, nf, "CalibrationErrors", ("num_images", "im_row", "im_col"), np.int16)
 
-        # Create variable for BadColumns
-        bad_cols = np.zeros((num_images, params["im_col"][0]))
-        for i, bcols in enumerate(pdata['BadColumns'].to_numpy()):
-            for j in bcols:
-                bad_cols[i, j] = 1
-        ncdf_create_var(bad_cols, nf, "BadColumns", ("num_images", "im_col"), np.int8)
+            # Create variable for BadColumns
+            bad_cols = np.zeros((num_images, params["im_col"][0]))
+            for i, bcols in enumerate(pdata['BadColumns'].to_numpy()):
+                for j in bcols:
+                    bad_cols[i, j] = 1
+            ncdf_create_var(bad_cols, nf, "BadColumns", ("num_images", "im_col"), np.int8)
 
         # Handle the remaining variables automatically
         handled_vars = list(nf.variables.keys())
-        if not im_calibrated:
-            handled_vars = handled_vars + ["ImageCalibrated", "CalibrationErrors", "BadColumns"]
+        if not image:
+            handled_vars = handled_vars + [imName, "CalibrationErrors", "BadColumns"]
+        if level == "1a":
+            handled_vars = handled_vars + ["ImageData", "Warnings", "Errors"]
 
         all_vars = pdata.keys() if var is None else var
         for var in all_vars:
@@ -290,7 +362,8 @@ def add_ncdf_vars(file, proto_var, new_vars, units=[]):
             if long_name is not None:
                 ncvar.long_name = long_name
             ncvar[:] = data
-            ncvar.units = nf[proto_var].units
+            if hasattr(nf[proto_var], "units"):
+                ncvar.units = nf[proto_var].units
         for v, unit in units:
             nf[v].units = unit
 
