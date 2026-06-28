@@ -262,7 +262,26 @@ def ndshift(data, offset, axis):
     return res
 
 
-def gen_neighborhood(data, ranges):
+def ndshift_sym(data, offset, axis):
+    shape = list(data.shape)
+    size = shape[axis]
+    res = data.copy()
+    if offset == 0:
+        return res
+    elif offset > 0:
+        idx = np.arange(2 * offset, size)
+    else:
+        idx = np.arange(size + 2 * offset)
+
+    pshape = shape.copy()
+    pshape[axis] = np.abs(offset)
+
+    return np.concatenate([np.full(pshape, np.nan), np.take(data, indices=idx, axis=axis), np.full(pshape, np.nan)],
+                          axis=axis)
+
+
+def gen_neighborhood(data, ranges, force_sym=False):
+    shiftf = ndshift_sym if force_sym else ndshift
     ndims = len(data.shape)
     assert len(ranges) == ndims, "Must have one interval in ranges for each data dimension!"
     idxs = [arr.flatten() for arr in np.meshgrid(*ranges, indexing='ij')]
@@ -278,7 +297,7 @@ def gen_neighborhood(data, ranges):
     for n in range(numn):
         copy = data.copy()
         for d in range(ndims):
-            copy = ndshift(copy, idxs[d][n], d)
+            copy = shiftf(copy, idxs[d][n], d)
         res[..., n] = copy
 
     return res

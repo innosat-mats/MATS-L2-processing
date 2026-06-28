@@ -125,7 +125,7 @@ def plot_apr_from_1d(grid_1d, ver_1d, grid, ver_from_1d, gridded=None):
 
 
 def quick_curves(curves, xlabel=None, ylabel=None, xdata=None, ofile=None, title=None,
-                 linewidth=None):
+                 linewidth=None, vrange=None, alpha=None):
     colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown',
               'tab:pink', 'tab:gray', 'tab:olive', 'tab:cyan']
     styles = ['-', "--", ":", "-."]
@@ -143,6 +143,8 @@ def quick_curves(curves, xlabel=None, ylabel=None, xdata=None, ofile=None, title
         xdata = np.arange(len(curves[list(curves.keys())[0]]))
 
     col_idx, style_idx = 0, 0
+    if vrange is not None:
+        plt.ylim(vrange)
     for name, data in curves.items():
         if type(data) is dict:
             pdata = data["data"]
