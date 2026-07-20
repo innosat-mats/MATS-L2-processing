@@ -1,7 +1,8 @@
 import argparse
 import numpy as np
 
-from mats_l2_processing.obs_preprocessing import find_images, cross_maps, reinterpolate_irreg, deghost
+from mats_l2_processing.obs_preprocessing import find_images, cross_maps, reinterpolate_irreg, deghost, \
+    subtract_top_median
 from mats_l2_processing.io import read_L1_ncdf, add_ncdf_vars, ncdf_filter_dim
 from mats_l2_processing.parameters import make_conf, get_updated_conf
 from mats_l2_processing.pointing import Pointing
@@ -25,7 +26,7 @@ def main():
     conf, const = make_conf("superpose", args.conf, args)
 
     # Read in data
-    agd = read_L1_ncdf(args.ag_file, var=const.CCD_VARS + ["ImageCalibrated"], center_times=True)
+    agd = read_L1_ncdf(args.ag_file, var=const.CCD_VARS + ["ImageCalibrated", "TPheightPixel"], center_times=True)
     chns = [agd["channel"][0], "IR3", "IR4"]
     conf = get_updated_conf(conf, {"CHANNELS": chns, "SEP_CHN_LOS": True})
     if chns[0] not in ["IR1", "IR2"]:
@@ -59,8 +60,8 @@ def main():
     # Filter daylight images, identify with corresponding background images
     valid = agd["TPsza"] < conf.SCAT_MAX_SZA
     idx = {}
-    valid, idx["IR3"], idx["IR4"] = find_images(ird[chns[0]]["time_s"], valid,
-                                                [ird[chn]["time_s"] for chn in chns[1:]])
+    valid, idx["IR3"], idx["IR4"] = find_images(ird[chns[0]]["time_s"], [ird[chn]["time_s"] for chn in chns[1:]],
+                                                valid_ref=valid)
 
     # Relative pointing of the channels
     pointing = Pointing([ird[chn] for chn in chns], conf, const)
@@ -92,7 +93,7 @@ def main():
                         deg_map=deg_maps[0], pad=0.0)
     destrayed *= const.CHN_WIDTHS[chns[0]]  # Convert spectral radiance to radience
 
-    # Write output
+    # Determine output filenames
     if args.out_file is None:
         if args.overwrite:
             out_file = args.ag_file
@@ -105,6 +106,12 @@ def main():
     else:
         out_file = args.ofile
 
+    # Subtract top median (if configured)
+    if conf.SUB_TOP_CONF["strategy"] is not None:
+        destrayed, medians = subtract_top_median(destrayed, ird[chns[0]]["TPheightPixel"][valid, :, :],
+                                                 conf.SUB_TOP_ALT_RANGE, conf=conf.SUB_TOP_CONF)
+
+    # Write files
     ncdf_filter_dim(args.ag_file, "time", np.where(valid)[0], out_file)  # Copy of the input file with invalid images removed
     outvar = [("ImageFinal", "Image to be used in Level 2 processing", np.maximum(destrayed, 0.0)),
               ("ImageBeforeDeghost", "Non-deghosted image (for testing)", non_deghosted)]
@@ -112,6 +119,10 @@ def main():
         outvar += [(f"{chn}Contribution", f"Contribution of {chn} in stray light removal", r_contrib[chn])
                    for chn in chns[1:]]
     add_ncdf_vars(out_file, "ImageCalibrated", outvar, units=[("ImageFinal", "photon meter-2 steradian-1 second-1")])
+    if conf.SUB_TOP_CONF["strategy"] is not None:
+        add_ncdf_vars(out_file, "TPsza", [("sub_top_value", "Subtracted radiance (based on top of img.)", medians)],
+                      units=[("sub_top_value", "photon nanometer-1 meter-2 steradian-1 second-1")])
+
 
 if __name__ == "__main__":
     main()

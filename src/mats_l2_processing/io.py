@@ -164,6 +164,7 @@ def write_ncdf_L1b_zarr_format(pdata, outfile, channel, version, extra_vars=None
             ncvar[:] = np.arange(size)
 
         # Set the values for variables that need special handling
+        breakpoint()
         special_variables = {"time": ((pdata["EXPDate"].to_numpy().astype(np.datetime64) - np.datetime64("2000-01-01T00:00:00.0")) / np.timedelta64(1, "s") * 1e9).astype(np.int64),
                              "CalibrationErrors": np.stack([np.stack(pdata["CalibrationErrors"][i], axis=0)
                                                            for i in range(len(pdata["CalibrationErrors"]))], axis=0),

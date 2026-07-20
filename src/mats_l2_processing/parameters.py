@@ -71,14 +71,20 @@ def make_conf(conf_type, conf_file, args):
                           "CHN_RAYLEIGH_SCALES": {"IR1": 1.10046208, "IR2": 1.09399409, "IR3": 1.19713362, "IR4": 1.0}}
     const["superpose"].update(const["destray"])
     req["superpose"] = ["RECAL_FAC_IR", "DISTORTION_CORRECTION", "DISTORTION_DATA", "SCAT_MAX_SZA", "ZEMAX_DATA_DIR",
-                        "TRANSMISSIVITY", "WRITE_IRB_CONTRIBUTION", "SCAT_TRANSFER", "SEP_IRB_DESTRAY"]
-
+                        "TRANSMISSIVITY", "WRITE_IRB_CONTRIBUTION", "SCAT_TRANSFER", "SEP_IRB_DESTRAY", "SUB_TOP_CONF",
+                        "SUB_TOP_ALT_RANGE"]
     # Configuration for L2 input data preparation
     req["get_data"] = ['START_TIME', 'STOP_TIME', 'VERSION', 'CHANNEL', 'STR_LEN']
 
     # Configuration for code that generates start/end times for each tomography run in a batch
     req["intervals"] = ['BATCH_START_TIME', 'BATCH_STOP_TIME', 'TOMO_CONDITIONS', 'TOMO_DEFAULT_DURATION',
                         'TOMO_MIN_DURATION', 'TOMO_MIN_OVERLAP']
+
+    # Configuration for L1b preprocessing
+    req["L1b_preproc_dark"] = ["JPG_FAIL_THRESHOLD", "COL_RANGE", "PREPROC_OBS_FACTOR", "SUB_TOP_ALT_RANGE",
+                               "SUB_TOP_CONF", "OUTLIER_FILTER_SIGMAS", "HPIX_TRANS_THRESHOLD"]
+    const["L1b_preproc_dark"] = {"PREPROC_VARS": ["ImageCalibrated", "TPheightPixel", "channel"]}
+
 
     # Configuration for data post-processing
     req["post"] = ["GRIDDED_POST", "GRID_TYPE"]
@@ -95,7 +101,8 @@ def make_conf(conf_type, conf_file, args):
 
     # Configuration for nadir tomography
     req["nadir_tomo"] = ["RAD_SCALE", "SA_WEIGHTS", "CG_ATOL", "CG_RTOL", "CG_MAX_STEPS", "NADIR_SAMPLING_FACTOR",
-                         "NADIR_DENOISE", "NADIR_DENOISE_HW", "NADIR_DENOISE_THR", "PERC_FILTER"]
+                         "NADIR_DENOISE", "NADIR_DENOISE_HW", "NADIR_DENOISE_THR", "PERC_FILTER",
+                         "ASPECT_RATIO"]
     const["nadir_tomo"] = {"DUMMY": 0.0}
 
     # Default values for all of the above
@@ -127,6 +134,7 @@ def make_conf(conf_type, conf_file, args):
                 "MEDCOLS_1D_APR": 5,
                 "INTERPOLATOR": "LINEAR",
                 "NCDF_OBS_FACTOR": 1.0,
+                "PREPROC_OBS_FACTOR": 1e12,
                 "GEOLOCATE_1D_FROM_TP": True,
                 "SEP_CHN_LOS": False,
                 "SCAT_MAX_SZA": 90,
@@ -139,15 +147,21 @@ def make_conf(conf_type, conf_file, args):
                 "SCAT_TRANSFER": False,
                 "SEP_IRB_DESTRAY": False,
                 "EXP_ALT_AXIS": -1,
-                "NADIR_GRID_TYPE": 'lonlat',
+                # "NADIR_GRID_TYPE": 'lonlat',
                 "NADIR_DENOISE": False,
                 "NADIR_DENOISE_HW": [2, 2, 2],
                 "NADIR_DENOISE_THR": 3,
                 "PERC_FILTER": -1,
                 "NADIR_SAMPLING_FACTOR": 1.0,
+                "NADIR_GRID_TYPE": "lonlat",
                 "STRICT_ALONGTRACK": False,
                 "CENTRAL_COLUMN": 22,
                 "TOMO_PADDING_IMG": 10,
+                "JPG_FAIL_THRESHOLD": 2.0,
+                "SUB_TOP_ALT_RANGE": (104.5e3, 105.5e3),
+                "SUB_TOP_CONF": {"strategy": None},
+                "OUTLIER_FILTER_SIGMAS": 4,
+                "HPIX_TRANS_THRESHOLD": 15,
                 }
 
     if conf_file is not None:
