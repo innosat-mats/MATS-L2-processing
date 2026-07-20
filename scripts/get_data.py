@@ -44,7 +44,7 @@ def get_args():
 
 def tp_calc_wrapper(image, common_args):
     image["time"] = image["EXPDate"].to_pydatetime()
-    return faster_heights(image, None, full_coords=True, deg_map=common_args[0])
+    return faster_heights(image, None, full_coords=True, deg_map=common_args[0], cols=np.arange(image['NCOL'] + 1))
 
 
 def main():
@@ -68,7 +68,6 @@ def main():
 
             dftop = read_MATS_data(DT.datetime(*conf.START_TIME), DT.datetime(*conf.STOP_TIME),
                                    filt, level=args.level, version=conf.VERSION)
-    # breakpoint()
 
     if args.parquet_out:
         store_as_parquet(dftop, f"{args.parquet_out}.parquet.gzip")

@@ -3,10 +3,12 @@ import numpy as np
 import scipy.sparse as sp
 from itertools import product, chain
 from scipy.sparse import coo_matrix
+from scipy.spatial.transform import Rotation as R
 from multiprocessing import Pool
 from types import SimpleNamespace
 
 from mats_l2_processing.io import write_gen_ncdf
+from mats_l2_processing.util import wgs842ecef, ecef2wgs84, cart2sph, sph2cart, geoid_radius
 
 
 class Nadir_grid(ABC):
@@ -39,8 +41,9 @@ class Nadir_grid(ABC):
         self.alt = None  # Altitude, 1d array
         self.mask = None  # Image mask
         self.atm_shape = None  # Grid shape
-        self.geo_coords = None
-        self.nalt = None
+        self.geo_coords = None  # Geolocated coordinates
+        self.nalt = None  # Number of altitude layers
+        self.reg_points = None  # Grid points rescaled so that the same reg. weigths would work across different grids
 
     def _set_derived(self):
         self.npoints = int(np.prod(self.atm_shape))
@@ -49,7 +52,7 @@ class Nadir_grid(ABC):
         gc = self.geo_coords[idx % self.nalt, idx // self.nalt, :, :, :]
         coords0 = np.stack([np.searchsorted(self.points[i + 1], gc[..., i].flatten(), sorter=None) - 1
                             for i in range(2)], axis=-1)
-        #numrows = gc.shape[1]
+        # numrows = gc.shape[1]
         numpoints_im = coords0.shape[0]
         numpoints_grid = int(np.prod(self.atm_shape[1:]))
 
@@ -121,6 +124,7 @@ class Nadir_grid_lonlat(Nadir_grid):
         self.lon = np.broadcast_to(self.points[1][np.newaxis, :, np.newaxis], self.atm_shape)
         self.lat = np.broadcast_to(self.points[2][np.newaxis, np.newaxis, :], self.atm_shape)
         self.geo_coords = np.stack([np.swapaxes(nadir_data[name], 2, 3) for name in ["lon", "lat"]], axis=-1)
+        self.reg_points = [self.points[i] * f for i, f in enumerate([1, np.cos(np.deg2rad(np.mean(self.lat))), 1])]
         self._set_derived()
 
     def write_nadir_L2_ncdf(self, obs, sol, fname, mask=True, hot_pix=None):
@@ -141,6 +145,96 @@ class Nadir_grid_lonlat(Nadir_grid):
                   "pix_lat": ("Geolocated latitude for each pixel", "degree_north",
                               self.geo_coords[..., 1], ("alt", ) + im_dims),
                   "ImageLayer": ("Radiance originating from each altitude layer", rad_unit, sol, ("alt", "lon", "lat"))}
+        if hot_pix is not None:
+            ncvars["HotPixels"] = ("Hot pixel map that was subtracted from each image", rad_unit,
+                                   hot_pix, ("img_col", "img_row"))
+        write_gen_ncdf(fname, dim_pars, ncvars, {})
+
+
+class Nadir_grid_rotated(Nadir_grid):
+    def __init__(self, nadir_data, conf, const, processes=1, mask=None):
+        super().__init__(nadir_data, conf, const, processes, mask=mask)
+        self.alt = nadir_data["alt"] * 1e3
+        self.nalt = len(self.alt)
+        self.points = [self.alt]
+        self.sampling_factor = conf.NADIR_SAMPLING_FACTOR
+        geo_lon, geo_lat = [np.swapaxes(nadir_data[name], 2, 3) for name in ["lon", "lat"]]
+        geo_alt = np.broadcast_to(self.alt[:, np.newaxis, np.newaxis, np.newaxis], geo_lat.shape)
+
+        # Geolocation coordinates as ECEF cartesians
+        geo_ecef = np.stack(wgs842ecef(geo_lat, geo_lon, geo_alt), axis=-1)
+        self.ecef_to_local = self.generate_local_transform(geo_ecef)
+
+        # Geolocation corrdinates in local grid
+        geo_shape = list(geo_ecef.shape)
+        geo_shape[-1] = 2
+        rotated = self.ecef_to_local.apply(geo_ecef.reshape(-1, 3))
+        del geo_ecef
+        self.geo_coords = np.stack(cart2sph(rotated)[1:3], axis=-1).reshape(geo_shape)
+
+        # Define local grid
+        for i in range(2):
+            coord = self.geo_coords[0, :, :, :, i]
+            lims = (np.min(coord), np.max(coord))
+            ref_img = self.geo_coords[0, int(geo_shape[1] / 2), :, :, i]
+            im_step = max([np.abs(np.mean(np.diff(ref_img, axis=j))) for j in range(2)])
+            self.points.append(np.arange(lims[0] - im_step * 2.1, lims[1] + im_step * 2.1,
+                                         im_step * self.sampling_factor))
+
+        self.atm_shape = tuple([len(x) for x in self.points])
+        self.lon, self.lat = self.get_grid_lonlat()
+        scale = 180 / np.pi
+        self.reg_points = [self.points[i] * f for i, f in enumerate([1, scale, scale])]
+        self.mean_rad = geoid_radius(np.deg2rad(self.lat.mean())) + self.alt[1]
+        self._set_derived()
+
+    @staticmethod
+    def generate_local_transform(geo_ecef):
+        # Calculate the transform from ecef to the local coordinate system.
+
+        num_img, num_rows, num_cols = geo_ecef.shape[1:4]
+
+        # First, middle, and last image indices
+        ref_img = (0, int((num_img - 1) / 2), num_img - 1)
+        center_row, center_col = [int(np.round(s / 2.0)) for s in [num_rows, num_cols]]
+        ref_ecef = np.stack([geo_ecef[1, idx, center_row, center_col, :] for idx in ref_img], axis=0)
+
+        orb_plane_normal = np.cross(ref_ecef[0, :], ref_ecef[2, :])
+        orb_plane_normal = orb_plane_normal / np.linalg.norm(orb_plane_normal)  # normalize vector
+
+        ecef_mid_unit = ref_ecef[1, :] / np.linalg.norm(ref_ecef[1, :])  # unit vector for central position
+        ecef_to_local = R.align_vectors([[1, 0, 0], [0, 1, 0]], [ecef_mid_unit, -orb_plane_normal])[0]
+        return ecef_to_local
+
+    def get_grid_lonlat(self):
+        points = self.points.copy()
+        points[0] = np.ones_like(points[0])  # Use unit radius
+        grid = np.stack(sph2cart(*np.meshgrid(*points, indexing='ij')), axis=-1)  # In local cartesian coordinates
+        _, lon, lat = cart2sph(self.ecef_to_local.inv().apply(grid.reshape(-1, 3)))
+        return [np.rad2deg(arr.reshape(grid.shape[:-1])) for arr in [lon, lat]]
+
+    def write_nadir_L2_ncdf(self, obs, sol, fname, mask=True, hot_pix=None):
+        dim_pars = {"alt": ("Altitude", "kilometer", self.points[0] * 1e-3),
+                    "across": ("Acrosstrack coordinate", "kilometer", self.points[1] * self.mean_rad * 1e-3),
+                    "along": ("Alongtrack coordinate", "kilometer", self.points[2] * self.mean_rad * 1e-3),
+                    "time": ("time", "seconds since 2000.01.01 00:00 UTC", self.img_time),
+                    "img_col": ("Column of (coadded) pixels in the image", None, np.arange(self.im_shape[0])),
+                    "img_row": ("Row of (coadded) pixels in the image", None, np.arange(self.im_shape[1]))}
+        im_dims = ("time", "img_col", "img_row")
+        sol_dims = ("alt", "across", "along")
+        rad_unit = "ph/cm^2/s/srad"
+        imgs = obs[0, ...]
+        if mask:
+            imgs = np.where(self.valid_obs, imgs, np.nan)
+        ncvars = {"ImageCalibrated": ("MATS images", rad_unit, imgs, im_dims),
+                  "pix_lon": ("Geolocated longitude for each pixel", "degree_east",
+                              self.geo_coords[..., 0], ("alt", ) + im_dims),
+                  "pix_lat": ("Geolocated latitude for each pixel", "degree_north",
+                              self.geo_coords[..., 1], ("alt", ) + im_dims),
+                  "ImageLayer": ("Radiance originating from each altitude layer", rad_unit, sol, sol_dims),
+                  "lon": ("Longitude of ImageLayer pixels", "degree_east", self.lon, sol_dims),
+                  "lat": ("Latitude of ImageLayer pixels", "degree_north", self.lat, sol_dims),
+                  }
         if hot_pix is not None:
             ncvars["HotPixels"] = ("Hot pixel map that was subtracted from each image", rad_unit,
                                    hot_pix, ("img_col", "img_row"))

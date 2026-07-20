@@ -9,14 +9,14 @@ IR1f, IR2f, out_file = sys.argv[1:4]
 conf, const = make_conf("superpose", "conf.py", {})
 conf = get_updated_conf(conf, {"CHANNELS": ["IR1", "IR2"], "SEP_CHN_LOS": True})
 
-IR1d = read_L1_ncdf(IR1f, var=const.CCD_VARS + ["ImageCalibrated", "TPsza", "satlat", "satlon"], center_times=True)
-IR2d = read_L1_ncdf(IR2f, var=const.CCD_VARS + ["ImageCalibrated"], center_times=True)
+IR1d = read_L1_ncdf(IR1f, var=const.CCD_VARS + ["ImageCalibrated", "TPsza", "satlat", "satlon", "jpg_fail"], center_times=True)
+IR2d = read_L1_ncdf(IR2f, var=const.CCD_VARS + ["ImageCalibrated", "jpg_fail"], center_times=True)
 
 saa = np.logical_and(np.logical_and(IR1d["satlat"] > -50, IR1d["satlat"] < 0),
                      np.logical_and(IR1d["satlon"] > -90, IR1d["satlon"] < 40))
-valid = np.logical_and(IR1d["TPsza"] > 100, np.logical_not(saa))
+valid = np.logical_and.reduce([IR1d["TPsza"] > 100, ~saa, ~IR1d["jpg_fail"].astype(bool)])
 
-valid, IR2idx = find_images(IR1d["time_s"], [IR2d["time_s"]], valid_ref=valid)
+valid, IR2idx = find_images(IR1d["time_s"], [IR2d["time_s"]], valid_ref=valid, valid_aux=[~IR2d["jpg_fail"].astype(bool)])
 
 pointing = Pointing([IR1d, IR2d], conf, const)
 deg_maps = [np.swapaxes(pointing.chn_map(chn=chn), 0, 2) for chn in ["IR1", "IR2"]]

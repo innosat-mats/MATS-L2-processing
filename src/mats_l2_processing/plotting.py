@@ -171,3 +171,46 @@ def quick_curves(curves, xlabel=None, ylabel=None, xdata=None, ofile=None, title
         plt.savefig(f"{ofile}.png", dpi=400)
     plt.close()
 
+
+def plot_histogram(arrays, xlabel=None, ylabel=None, ofile=None, title=None, nbins=100, yrange=None, xrange=None,
+                   density=False, cumulative=False, linewidth=None):
+    colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown',
+              'tab:pink', 'tab:gray', 'tab:olive', 'tab:cyan']
+    styles = ['-', "--", ":", "-."]
+
+    if xrange is None:
+        bins = nbins
+    else:
+        bins = np.linspace(xrange[0], xrange[1], nbins)
+
+    plt.figure()
+    col_idx, style_idx = 0, 0
+    for name, data in arrays.items():
+        if type(data) is dict:
+            pdata = data["data"]
+            if "groups" in data.keys():
+                col_idx, style_idx = data["groups"]
+        else:
+            pdata = data
+        vals, edges = np.histogram(pdata, bins=bins)
+        if density:
+            vals = vals / vals.sum()
+        if cumulative:
+            vals = np.cumsum(vals)
+        plt.stairs(vals, edges, label=name, color=colors[col_idx], linestyle=styles[style_idx], linewidth=linewidth)
+        col_idx += 1
+    plt.legend()
+    plt.grid()
+    if yrange is not None:
+        plt.ylim(yrange)
+    if xlabel is not None:
+        plt.xlabel(xlabel)
+    if ylabel is not None:
+        plt.ylabel(ylabel)
+    if title is not None:
+        plt.title(title)
+    if ofile is None:
+        plt.show()
+    else:
+        plt.savefig(f"{ofile}.png", dpi=400)
+    plt.close()

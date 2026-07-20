@@ -1,15 +1,18 @@
 import numpy as np
 import netCDF4 as nc
+import datetime as DT
+from bisect import bisect
 import logging
 from scipy.spatial.transform import Rotation as R
 from scipy.interpolate import RectBivariateSpline, interpn, LinearNDInterpolator, CloughTocher2DInterpolator
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import deconvolve
 from scipy.optimize import curve_fit
+from scipy.ndimage import binary_erosion
 
 # from mats_l1_processing.pointing import pix_deg
 from mats_l2_processing.pointing import Pointing
-from mats_l2_processing.util import get_image
+from mats_l2_processing.util import get_image, multiprocess, DT2seconds
 
 
 #def get_deg_map(image):
@@ -285,6 +288,7 @@ def gen_neighborhood(data, ranges, force_sym=False):
     ndims = len(data.shape)
     assert len(ranges) == ndims, "Must have one interval in ranges for each data dimension!"
     idxs = [arr.flatten() for arr in np.meshgrid(*ranges, indexing='ij')]
+    
     numn = len(idxs[0])
     for n in range(numn):
         if all([idxs[d][n] == 0 for d in range(ndims)]):
@@ -361,18 +365,19 @@ def separate_scattered_stray(im, ref_rows, bot_row, scale_height, valid=None,
     return scat_fit, rayleigh_fit  # , scat_fit_og, rayleigh_fit_og
 
 
-def find_images(ref_times, aux_times, thr=3.1, valid_ref=None):
+def find_images(ref_times, aux_times, thr=3.1, valid_ref=None, valid_aux=None):
     if valid_ref is None:
         valid = np.ones_like(ref_times)
-    else:
-        valid = valid_ref.copy()
+    if valid_aux is None:
+        valid_aux = [np.ones_like(arr) for arr in aux_times]
+    valid = valid_ref.copy()
     res = []
     for i, times in enumerate(aux_times):
         idx = np.searchsorted(times, ref_times, side='left')
         idx = np.where(idx == 0, 1, idx)
         idx = np.where(idx == len(times), len(times) - 1, idx)
         idx = np.where(np.abs(times[idx - 1] - ref_times) < np.abs(times[idx] - ref_times), idx - 1, idx)
-        idx = np.where(np.abs(times[idx] - ref_times) < thr, idx, -1)
+        idx = np.where(np.logical_and(np.abs(times[idx] - ref_times) < thr, valid_aux[i][idx]), idx, -1)
         valid = np.logical_and(valid, idx > -1)
         res.append(idx)
 
@@ -422,3 +427,116 @@ def deghost(imgs, ghost_strength, offset_pix=None, offset_angle=None, pix_pitch=
             res[i, :, k] = deconvolve(data[i, :, k], kernel)[0]
 
     return res
+
+
+def pvgrad(data, denoise_iter=0, roll=0):
+    pad = np.zeros((1, data.shape[1]))
+    diff = np.diff(data, axis=0, append=pad)
+    diff = np.maximum(0, diff)
+    if denoise_iter > 0:
+        diff[binary_erosion(diff > 0, iterations=denoise_iter) == 0] = 0.0
+    if roll > 0:
+        diff = np.minimum(diff, np.roll(diff, roll, axis=1))
+    # denoised = np.minimum(diff, np.roll(diff, roll, axis=1)) if roll > 0 else diff
+    return diff
+
+
+def aurora_proxy_img(image, args):
+    # Detect high signal above high thresold
+    high = np.logical_and(image[args["TPh"]] > args["vrange"][1] - 1e3, image[args["TPh"]] < args["vrange"][1])
+    bright_high = np.where(high, np.minimum(image[args["IR1"]], image[args["IR2"]]), 0.0) > args["high_thr"]
+    bright_high[binary_erosion(bright_high, iterations=args["denoise_iter"] * 2) == 0] = 0
+
+    valid = np.logical_and(image[args["TPh"]] > args["vrange"][0], image[args["TPh"]] < args["vrange"][1])
+    valid_rows = np.sum(valid, axis=1).astype(bool)
+    grads = []
+    for chn in ["IR1", "IR2"]:
+        rmean = sum([image[args[chn]][np.roll(valid_rows, r), :] for r in [-2, -1, 0, 1, 2]])
+        grads.append(np.where(valid[valid_rows, :],
+                              pvgrad(rmean, denoise_iter=args["denoise_iter"], roll=args["roll"]),
+                              0.0))
+    res = []
+    for i in range(2):
+        full = np.zeros_like(valid)
+        full[valid_rows, :] = np.maximum(grads[i], bright_high[valid_rows, :])
+        res.append(full)
+    return np.stack(res, axis=0)
+    # return np.sum((np.minimum(grads[0], grads[1]) > 0)[:, args["col_range"][0]:args["col_range"][1]]) + bright_high
+
+
+def aurora_proxy(data, vrange=[95e3, 104e3], denoise_iter=1, roll=1, ir1v="IR1", ir2v="IR2", tpv="TPh", nproc=1,
+                 col_range=(0, 44), full=False, aurora_thr=6e13):
+    common_args = {"vrange": [x * 1e3 for x in vrange], "denoise_iter": denoise_iter, "roll": roll, "full": full,
+                   "IR1": ir1v, "IR2": ir2v, "TPh": tpv, "col_range": col_range, "high_thr": aurora_thr}
+    return multiprocess(aurora_proxy_img, data, [ir1v, ir2v, tpv], nproc, common_args, stack=True)
+
+
+def jpg_fail_proxy(data, comp_hw=5):
+    sums = np.maximum(data[:, 1:, :] + data[:, :-1, :], 0.0)
+    series = np.where(sums > 0, np.maximum(data[:, 1:, :] - data[:, :-1, :], 0.0), 0.0)
+    series = np.sqrt(np.sum(series ** 2, axis=(1, 2)))
+    res = np.array([2 * series[i] / (np.median(series[i - comp_hw:i]) + np.median(series[i + 1:i + comp_hw + 1]))
+                   for i in range(len(series))])
+    return res
+
+
+def extract_bit(calib_errors, bit, flip=False):
+    mod = np.power(2, bit - 1)
+    res = calib_errors % (2 * mod) >= mod
+    if flip:
+        return np.flip(res, axis=1)
+    else:
+        return res
+
+
+def fill_invalid(data, invalid, ranges=[(0,), (-2, -1, 0, 1, 2), (-2, -1, 0, 1, 2)], outlier_filter=None):
+    neighbours = gen_neighborhood(data, ranges, force_sym=True)
+    medians = np.nanmedian(neighbours, axis=-1)
+    medians[:, 0, 0] = medians[:, 0, 1]
+    medians[:, 0, -1] = medians[:, 0, -2]
+    medians[:, -1, 0] = medians[:, -1, 1]
+    medians[:, -1, -1] = medians[:, -1, -2]
+
+    if outlier_filter is not None:
+        outliers = np.nanstd(neighbours, axis=-1) * outlier_filter < np.abs(data - medians)
+        invalid = np.logical_or(invalid, outliers)
+
+    return np.where(invalid, medians, data), invalid
+
+
+def layer_sim_factor(top, thickness, h):
+    Re = 6371
+    rh2 = (Re + h) ** 2
+    res = np.sqrt((Re + top + thickness) ** 2 - rh2) - np.sqrt((Re + top) ** 2 - rh2)
+    return np.minimum(res / np.sqrt(thickness * (2 * Re + 2 * top + thickness)), 1.0)
+
+
+def subtract_top_median(data, tph, ref_alt_range, conf={"strategy": "constant"}):
+    medians = np.nanmedian(np.where(np.logical_and(tph > ref_alt_range[0], tph < ref_alt_range[1]), data, np.nan),
+                           axis=(1, 2))
+    if conf["strategy"] == "constant":
+        return data - medians[:, np.newaxis, np.newaxis], medians
+    if conf["strategy"] == "layer_sim":
+        return data - layer_sim_factor(ref_alt_range[1], conf["thickness"], tph) *\
+            medians[:, np.newaxis, np.newaxis], medians
+
+
+def hot_pix_trans_masks(hot_pix_file, channel, threshold, img_times):
+    hpdata = np.load(hot_pix_file)
+
+    # Determine which mask to use for which image
+    dts = np.array([DT2seconds(DT.datetime.fromisoformat(t).replace(tzinfo=DT.timezone.utc))
+                    for t in hpdata[f"{channel}_datetimes"]])
+    idxs = np.array([bisect(dts, t) for t in img_times])
+    if (idxs == 0).any() or (idxs == len(dts)).any():
+        raise ValueError("Some images are outside the time range covered by the hot pixel map!")
+    idxs = idxs - 1
+
+    # Generate masks themselves
+    hmaps = hpdata[channel].astype(float)
+    masks = np.abs(hmaps[1:, :, :] - hmaps[:-1, :, :]) > threshold
+
+    return masks, idxs
+
+
+
