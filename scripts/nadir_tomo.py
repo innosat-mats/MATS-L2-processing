@@ -3,11 +3,12 @@ import argparse
 import datetime as DT
 import numpy as np
 import scipy.sparse as sp
+from scipy.ndimage import gaussian_filter
 
 from mats_l2_processing import parameters
 from mats_l2_processing.io import read_nadir_gl_zarr
 from mats_l2_processing.solver import Linear_solver
-from mats_l2_processing.nadir import Nadir_grid_lonlat, Nadir_forward_model
+from mats_l2_processing.nadir import Nadir_grid_lonlat, Nadir_grid_rotated, Nadir_forward_model
 from mats_l2_processing.regularisation import Sa_inv_multivariate
 from mats_l2_processing.obs_preprocessing import denoise
 
@@ -70,13 +71,18 @@ def main():
         nadir_data["img"] = denoise(nadir_data["img"], conf.NADIR_DENOISE_HW, conf.NADIR_DENOISE_THR)
 
     logging.info("Initializing geometry...")
-    grid = Nadir_grid_lonlat(nadir_data, conf, const, mask=mask)
+    grid_types = {"lonlat": Nadir_grid_lonlat, "rotated": Nadir_grid_rotated}
+    if conf.NADIR_GRID_TYPE in grid_types:
+        grid_constructor = grid_types[conf.NADIR_GRID_TYPE]
+    else:
+        raise ValueError(f"Invalid grid type {conf.NADIR_GRID_TYPE} specified!")
+
+    grid = grid_constructor(nadir_data, conf, const, mask=mask)
     fwdm = Nadir_forward_model(grid)
 
     logging.info("Initializing inverse model...")
-    reg_points = (grid.points[0], grid.points[1] * np.cos(np.deg2rad(np.mean(grid.lat))), grid.points[2])
-    Sa_inv, terms = Sa_inv_multivariate(reg_points, conf.SA_WEIGHTS, volume_factors=True, store_terms=True,
-                                        aspect_ratio=1, var_scales=None, exp_alt_axis=-1)
+    Sa_inv, terms = Sa_inv_multivariate(grid.reg_points, conf.SA_WEIGHTS, volume_factors=True, store_terms=True,
+                                        aspect_ratio=conf.ASPECT_RATIO, var_scales=None, exp_alt_axis=-1)
     Se_inv = sp.diags(np.ones((grid.num_obs)), 0).astype('float32') / (conf.RAD_SCALE ** 2 * len(fwdm.channels))
 
     logging.info("Calculating jacobian...")
@@ -84,11 +90,10 @@ def main():
 
     logging.info("Solving...")
     obs_data = fwdm.prepare_obs(nadir_data["img"])
-    # obs_data_test = np.full_like(obs_data, 1.0)
-    # obs_data_test[0, :, 28, 7] = 1.0
-    # breakpoint()
+
     solver = Linear_solver(fwdm, obs_data, conf, Sa_inv, Se_inv, np.zeros(grid.atm_shape), Sa_terms=terms)
-    sol = solver.solve(args.processes, jac=jac, fx=np.zeros_like(obs_data))
+    sol = solver.solve(args.processes, jac=jac, fx=np.zeros_like(obs_data), )
+
     grid.write_nadir_L2_ncdf(obs_data, np.where(valid_points, sol, np.nan), "L2_nadir.nc", mask=True, hot_pix=hot_pix)
 
 

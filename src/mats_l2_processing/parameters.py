@@ -8,10 +8,11 @@ def make_conf(conf_type, conf_file, args):
     CCD_VARS = ['channel', 'NCSKIP', 'NRBIN', 'NCOL', 'NRSKIP', 'NROW', 'NCBINCCDColumns', "TEXPMS"]
     ATT_VARS = ["afsAttitudeState", "qprime", 'afsGnssStateJ2000', "time"]
     TP_VARS = ["TPlat", "TPlon", "TPECEFx", "TPECEFy", "TPECEFz"]
+    CG_VARS = ["CG_ATOL", "CG_RTOL", "CG_MAX_STEPS"]
     GEN_RET_VARS = ['START_TIME', 'STOP_TIME', 'CHANNELS', "SA_WEIGHTS", "RET_QTY", "AUX_QTY", "EPSILON_WEIGHTS",
-                    "TP_ALT_RANGE", "SCALES", "BOUNDS", "RAD_SCALE", "INTERPOLATOR", "RET_ALT_RANGE", "CG_ATOL",
-                    "CG_RTOL", "CG_MAX_STEPS", "TOP_ALT", "STEP_SIZE", "COL_RANGE", "ROW_RANGE", "RT_DATA_FILE",
-                    "GRIDDED_PRE", "NCDF_OBS_FACTOR", "STRICT_ALONGTRACK", "CENTRAL_COLUMN"]
+                    "TP_ALT_RANGE", "SCALES", "BOUNDS", "RAD_SCALE", "INTERPOLATOR", "RET_ALT_RANGE", "TOP_ALT",
+                    "STEP_SIZE", "COL_RANGE", "ROW_RANGE", "RT_DATA_FILE", "GRIDDED_PRE", "NCDF_OBS_FACTOR",
+                    "STRICT_ALONGTRACK", "CENTRAL_COLUMN"] + CG_VARS
     LM_VARS = ["LM_IT_MAX", "LM_PAR_0", "LM_FAC", "LM_MAX_FACTS_PER_ITER", "CONV_CRITERION"]
     APR_1D_VARS = ["SA_WEIGHTS_1D_APR", "CHANNEL_1D_APR", "MEDCOLS_1D_APR", "GRIDDED_PRE_1D"]
 
@@ -101,8 +102,8 @@ def make_conf(conf_type, conf_file, args):
 
     # Configuration for nadir tomography
     req["nadir_tomo"] = ["RAD_SCALE", "SA_WEIGHTS", "CG_ATOL", "CG_RTOL", "CG_MAX_STEPS", "NADIR_SAMPLING_FACTOR",
-                         "NADIR_DENOISE", "NADIR_DENOISE_HW", "NADIR_DENOISE_THR", "PERC_FILTER",
-                         "ASPECT_RATIO"]
+                         "NADIR_DENOISE", "NADIR_DENOISE_HW", "NADIR_DENOISE_THR", "PERC_FILTER", "NADIR_GRID_TYPE",
+                         "ASPECT_RATIO"] + CG_VARS
     const["nadir_tomo"] = {"DUMMY": 0.0}
 
     # Default values for all of the above
@@ -147,7 +148,7 @@ def make_conf(conf_type, conf_file, args):
                 "SCAT_TRANSFER": False,
                 "SEP_IRB_DESTRAY": False,
                 "EXP_ALT_AXIS": -1,
-                # "NADIR_GRID_TYPE": 'lonlat',
+                "NADIR_GRID_TYPE": 'lonlat',
                 "NADIR_DENOISE": False,
                 "NADIR_DENOISE_HW": [2, 2, 2],
                 "NADIR_DENOISE_THR": 3,

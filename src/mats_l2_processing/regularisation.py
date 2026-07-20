@@ -69,6 +69,8 @@ def tikhonov_laplacian_op(grids, volume_factors, aspect_ratio=None):
         aspect_ratio = np.ones(len(grids))
 
     for axis, grid in enumerate(grids):
+        if aspect_ratio[axis] <= 0:
+            continue
         step = 1
         for i in range(axis + 1, len(shape)):
             step *= shape[i]

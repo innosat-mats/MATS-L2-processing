@@ -267,6 +267,27 @@ def ecef2wgs84(pos):
     return phi, lambd, h
 
 
+def wgs842ecef(lat, lon, alt):
+    # WGS84 reference ellipsoid constants
+    a = 6378137.0            # Semi-major axis (meters)
+    f = 1.0 / 298.257223563  # Flattening
+    e_sq = f * (2.0 - f)     # First eccentricity squared
+
+    rlat, rlon = [np.deg2rad(arr) for arr in [lat, lon]]
+    sin_lat, cos_lat = np.sin(rlat), np.cos(rlat)
+    sin_lon, cos_lon = np.sin(rlon), np.cos(rlon)
+
+    # Prime vertical radius of curvature
+    N = a / np.sqrt(1.0 - e_sq * (sin_lat ** 2))
+
+    # Calculate ECEF coordinates
+    x = (N + alt) * cos_lat * cos_lon
+    y = (N + alt) * cos_lat * sin_lon
+    z = (N * (1.0 - e_sq) + alt) * sin_lat
+
+    return x, y, z
+
+
 def valid_row(matrix, is_valid, is_sparse, factor=1.0):
     if is_sparse:
         assert matrix.shape[0] == 1, "The matrix must be a row vector!"
