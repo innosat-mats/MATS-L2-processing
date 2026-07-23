@@ -107,21 +107,21 @@ def main():
         out_file = args.ofile
 
     # Subtract top median (if configured)
-    if conf.SUB_TOP_CONF["strategy"] is not None:
+    if conf.SUB_TOP_CONF["rows"] is not None:
         destrayed, medians = subtract_top_median(destrayed, ird[chns[0]]["TPheightPixel"][valid, :, :],
                                                  conf.SUB_TOP_ALT_RANGE, conf=conf.SUB_TOP_CONF)
 
     # Write files
     ncdf_filter_dim(args.ag_file, "time", np.where(valid)[0], out_file)  # Copy of the input file with invalid images removed
-    outvar = [("ImageFinal", "Image to be used in Level 2 processing", np.maximum(destrayed, 0.0)),
+    outvar = [("ImageFinal", "Image to be used in Level 2 processing", destrayed),
               ("ImageBeforeDeghost", "Non-deghosted image (for testing)", non_deghosted)]
     if conf.WRITE_IRB_CONTRIBUTION:
         outvar += [(f"{chn}Contribution", f"Contribution of {chn} in stray light removal", r_contrib[chn])
                    for chn in chns[1:]]
     add_ncdf_vars(out_file, "ImageCalibrated", outvar, units=[("ImageFinal", "photon meter-2 steradian-1 second-1")])
-    if conf.SUB_TOP_CONF["strategy"] is not None:
-        add_ncdf_vars(out_file, "TPsza", [("sub_top_value", "Subtracted radiance (based on top of img.)", medians)],
-                      units=[("sub_top_value", "photon nanometer-1 meter-2 steradian-1 second-1")])
+    #if conf.SUB_TOP_CONF["rows"] is not None:
+    #    add_ncdf_vars(out_file, "TPsza", [("sub_top_value", "Subtracted radiance (based on top of img.)", medians)],
+    #                  units=[("sub_top_value", "photon nanometer-1 meter-2 steradian-1 second-1")])
 
 
 if __name__ == "__main__":

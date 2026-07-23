@@ -365,9 +365,14 @@ def separate_scattered_stray(im, ref_rows, bot_row, scale_height, valid=None,
     return scat_fit, rayleigh_fit  # , scat_fit_og, rayleigh_fit_og
 
 
+def nd_running_mean(data, hw, axis=0):
+    shifted = np.stack([ndshift(data, p, axis) for p in np.arange(-hw, hw + 1)], axis=0)
+    return np.nanmean(shifted, axis=0)
+
+
 def find_images(ref_times, aux_times, thr=3.1, valid_ref=None, valid_aux=None):
     if valid_ref is None:
-        valid = np.ones_like(ref_times)
+        valid_ref = np.ones_like(ref_times)
     if valid_aux is None:
         valid_aux = [np.ones_like(arr) for arr in aux_times]
     valid = valid_ref.copy()
@@ -511,12 +516,23 @@ def layer_sim_factor(top, thickness, h):
     return np.minimum(res / np.sqrt(thickness * (2 * Re + 2 * top + thickness)), 1.0)
 
 
-def subtract_top_median(data, tph, ref_alt_range, conf={"strategy": "constant"}):
+def subtract_top_median(data, tph, ref_alt_range, conf={"rows": "constant", "cols": "constant"}):
+    axis = (1, 2) if conf["cols"] == "constant" else 1
     medians = np.nanmedian(np.where(np.logical_and(tph > ref_alt_range[0], tph < ref_alt_range[1]), data, np.nan),
-                           axis=(1, 2))
-    if conf["strategy"] == "constant":
-        return data - medians[:, np.newaxis, np.newaxis], medians
-    if conf["strategy"] == "layer_sim":
+                           axis=axis)
+
+    if conf["cols"] == "running_mean":
+        medians = nd_running_mean(medians, conf["running_mean_hw"], axis=1)[:, np.newaxis, :]
+    elif conf["cols"] == "constant":
+        medians = medians[:, np.newaxis, np.newaxis]
+    elif conf["cols"] == "separate":
+        medians = medians[:, np.newaxis, :]
+    else:
+        raise ValueError(f"Invalid row column treatment type {conf['cols']}!")
+
+    if conf["rows"] == "constant":
+        return data - medians, medians
+    if conf["rows"] == "layer_sim":
         return data - layer_sim_factor(ref_alt_range[1], conf["thickness"], tph) *\
             medians[:, np.newaxis, np.newaxis], medians
 
@@ -537,6 +553,3 @@ def hot_pix_trans_masks(hot_pix_file, channel, threshold, img_times):
     masks = np.abs(hmaps[1:, :, :] - hmaps[:-1, :, :]) > threshold
 
     return masks, idxs
-
-
-
