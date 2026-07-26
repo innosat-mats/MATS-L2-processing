@@ -13,6 +13,7 @@ class Forward_model(ABC):
         self.grid = grid
         self.obs = obs
         self.sep_chn_los = conf.SEP_CHN_LOS
+        self.calc_trans = conf.CALC_TRANSMISSIVITY
 
         self.channels = obs.channels
         self.num_channels = len(obs.channels)
@@ -184,7 +185,8 @@ class Forward_model(ABC):
 
     def _calc_fwdm_image(self, num_simage, common_args):
         tic = time.time()
-        fx_im = np.zeros(self.fx_image_shape)
+        extra_dim = (2,) if self.calc_trans else (1,)
+        fx_im = np.zeros(self.fx_image_shape + extra_dim)
         if self.combine_images:
             im_atm, im_aux = [item.copy() for item in common_args]
         else:
@@ -194,21 +196,32 @@ class Forward_model(ABC):
             im_los = self.obs.calc_los_image(num_simage, j)
             for idx in np.ndindex(self.fx_image_shape[1:]):
                 if self.obs.valid_obs[j, num_simage, idx[0], idx[1]]:
-                    fxres = self._fwdm_los(im_los[idx[0]][idx[1]], im_atm, im_aux)
+                    fxres, txres = self._fwdm_los(im_los[idx[0]][idx[1]], im_atm, im_aux)
                     if self.sep_chn_los:
-                        fx_im[j, *idx] = fxres[j]
+                        fx_im[j, *idx, 0] = fxres[j]
+                        if self.calc_trans:
+                            fx_im[j, *idx, 1] = txres[j]
                     else:
-                        fx_im[:, *idx] = fxres
+                        fx_im[:, *idx, 0] = fxres
+                        if self.calc_trans:
+                            fx_im[:, *idx, 1] = txres
+
         logging.log(15, f"Forward model: Image {num_simage} processed in {time.time()-tic:.1f} s.")
         return fx_im
 
     def calc_fwdm(self, atm, processes=1):
-        fx = multiprocess(self._calc_fwdm_image, self.num_simages, [], processes, [atm, self.aux],
-                          stack=True, numbers_only=True)
-        fx = np.transpose(fx, axes=(1, 0, 2, 3))
+        fxr = multiprocess(self._calc_fwdm_image, self.num_simages, [], processes, [atm, self.aux],
+                           stack=True, numbers_only=True)
+
+        fx = np.transpose(fxr[..., 0], axes=(1, 0, 2, 3))
+
+        if self.calc_trans:
+            tx = np.transpose(fxr[..., 1], axes=(1, 0, 2, 3))
+        else:
+            tx = None
         if np.isnan(fx).any():
             raise RuntimeError("Forward model: Nan's encountered in fx! Abort!")
-        return fx
+        return fx, tx
 
     def _get_qty_id(self, qty):
         if qty in self.grid.ret_qty:
@@ -229,7 +242,9 @@ class Forward_model_temp_abs(Forward_model):
         self.startT = np.linspace(100, 600, 501)
         self.Tstep = self.startT[1] - self.startT[0]
         self.factor = self.stepsize / 4 / np.pi * 1e6
+        self.channel_norms = np.sum(self.rt_data["filters"], axis=1)
 
+        
     def _interp_T(self, vals, tables):
         ix = np.array(np.floor((vals - self.startT[0]) / self.Tstep), dtype=int)
         w0 = (self.startT[ix + 1] - vals) / self.Tstep
@@ -270,7 +285,8 @@ class Forward_model_temp_abs(Forward_model):
         exp_tau = np.exp(-(sigmas * patho2).cumsum(axis=1) * self.stepsize * 1e2) * self.factor
         del sigmas
         path_tau_em = self.rt_data["filters"] @ (exp_tau * emissions)
-        return np.sum(path_tau_em * pathVER, axis=1)
+        trans = (path_tau_em[:, -1] / (self.rt_data["filters"] @ emissions)[:, -1]) / self.factor
+        return np.sum(path_tau_em * pathVER, axis=1), trans
 
 
 class Forward_model_basic_lin(Forward_model):
@@ -278,7 +294,7 @@ class Forward_model_basic_lin(Forward_model):
         super().__init__(conf, const, grid, obs, [], combine_images=combine_images)
         self.ver_id = self._get_qty_id("dVER")
         self.factor = (self.stepsize * 1e6)
-
+        
     def _fwdm_los(self, pos, atm, _):
         pathVER, _ = self.interp.interpolate(pos, atm[self.ver_id[1]])
         return [np.sum(pathVER) * self.factor]
