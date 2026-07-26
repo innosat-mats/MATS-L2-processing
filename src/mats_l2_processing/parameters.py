@@ -39,7 +39,7 @@ def make_conf(conf_type, conf_file, args):
                        "MEAN_EARTH_RADIUS": MEAN_EARTH_RADIUS}
     req["iter_T"] = ['ALT_GRID', 'ALONG_GRID', 'ACROSS_GRID', "ASPECT_RATIO", "SEP_CHN_LOS", "OBS_SRC_VAR",
                      "DISTORTION_CORRECTION", "DISTORTION_DATA", "GEOLOCATE_1D_FROM_TP", "TOMO_PADDING_IMG",
-                     "EXP_ALT_AXIS"] + GEN_RET_VARS + LM_VARS + APR_1D_VARS
+                     "EXP_ALT_AXIS", "CALC_TRANSMISSIVITY"] + GEN_RET_VARS + LM_VARS + APR_1D_VARS
 
     # Configuration for grid calculation
     const["grid"] = {"NEEDED_DATA": CCD_VARS + ATT_VARS + TP_VARS, "TP_VARS": CCD_VARS + ATT_VARS,
@@ -85,7 +85,6 @@ def make_conf(conf_type, conf_file, args):
     req["L1b_preproc_dark"] = ["JPG_FAIL_THRESHOLD", "COL_RANGE", "PREPROC_OBS_FACTOR", "SUB_TOP_ALT_RANGE",
                                "SUB_TOP_CONF", "OUTLIER_FILTER_SIGMAS", "HPIX_TRANS_THRESHOLD"]
     const["L1b_preproc_dark"] = {"PREPROC_VARS": ["ImageCalibrated", "TPheightPixel", "channel"]}
-
 
     # Configuration for data post-processing
     req["post"] = ["GRIDDED_POST", "GRID_TYPE"]
@@ -160,9 +159,10 @@ def make_conf(conf_type, conf_file, args):
                 "TOMO_PADDING_IMG": 10,
                 "JPG_FAIL_THRESHOLD": 2.0,
                 "SUB_TOP_ALT_RANGE": (104.5e3, 105.5e3),
-                "SUB_TOP_CONF": {"strategy": None},
+                "SUB_TOP_CONF": {"rows": None},
                 "OUTLIER_FILTER_SIGMAS": 4,
                 "HPIX_TRANS_THRESHOLD": 15,
+                "CALC_TRANSMISSIVITY": False,
                 }
 
     if conf_file is not None:

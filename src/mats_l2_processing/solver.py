@@ -158,19 +158,24 @@ class Lavenberg_marquardt_solver(Solver):
         self.fwdm.obs.write_obs_ncdf(self.fname, fx, obs_suffix="_sim_apr", attributes=atts,
                                      obs_suffix_long="forward model simulation based on a priori")
 
-    def _L2_write_iter(self, atm, fx, it_id):
+    def _L2_write_iter(self, atm, fx, it_id, tx=None):
         # it_id is iteration number if positive, -1 if final value
         if it_id < 0:
             suffix = ""
             long_suffix = ", final result"
+            write_tx = tx is not None
         else:
             suffix = f"_it_{it_id}"
             long_suffix = f", iteration {it_id}"
+            write_tx = False
 
         self.fwdm.grid.write_atm_ncdf(self.fname, atm, atm_suffix=suffix, atm_suffix_long=long_suffix)
         logging.log(15, f"fx shape: {fx.shape}")
         self.fwdm.obs.write_obs_ncdf(self.fname, fx, obs_suffix=f"_sim{suffix}",
                                      obs_suffix_long=f", forward model simulation for {long_suffix}")
+        if write_tx:
+            self.fwdm.obs.write_obs_ncdf(self.fname, tx, obs_suffix=f"_trans{suffix}",
+                                         obs_suffix_long=f", transmissivity for {long_suffix}")
 
     def _LM_iteration(self, xp, K, fx, lm):
         tic = time.time()
@@ -233,7 +238,7 @@ class Lavenberg_marquardt_solver(Solver):
                 sol["lm"] = lm
                 xhat = self._LM_iteration(xp, K, fxp.flatten(), lm)
                 sol["sol"] = self.fwdm.grid.reset_invalid(xhat)
-                sol["fx"] = self.fwdm.calc_fwdm(self.fwdm.grid.vec2atm(sol["sol"]), nproc)
+                sol["fx"], sol["tx"] = self.fwdm.calc_fwdm(self.fwdm.grid.vec2atm(sol["sol"]), nproc)
                 sol["cf"] = num.cost_func(sol["sol"], self.xa, self.y_ar, sol["fx"].flatten(), self.Se_inv,
                                           self.Sa_inv, debug_nan=self.fwdm.debug_nan)
                 logging.info(f"Iteration {it}: derived solution with lambda={lm:.2e}, misfit {sol['cf']:.2e}.")
@@ -256,10 +261,11 @@ class Lavenberg_marquardt_solver(Solver):
                         if converged and (best_sol["lm"] == sol["lm"]):
                             continue
                         sol = {}
-                        xp, fxp, lm_par, cf_p = best_sol["sol"], best_sol["fx"], best_sol["lm"], best_sol["cf"]
+                        xp, fxp, lm_par, cf_p, tx = best_sol["sol"], best_sol["fx"], best_sol["lm"], best_sol["cf"],\
+                            best_sol["tx"]
                         logging.info(f"Iteration {it}: accepted solution with lambda={lm_par:.2e}" +
                                      f", misfit {best_sol['cf']:.2e} ({cf_ratio:.2f} of previous)")
-                        self._L2_write_iter(self.fwdm.grid.vec2atm(xp), fxp, -1 if final else it)
+                        self._L2_write_iter(self.fwdm.grid.vec2atm(xp), fxp, -1 if final else it, tx=tx)
                         if not final:
                             break
                         logging.info("Convergence reached!" if converged else "Max. number of iterations reached!")
