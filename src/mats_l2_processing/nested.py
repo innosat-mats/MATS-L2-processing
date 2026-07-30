@@ -12,10 +12,40 @@ from mats_l2_processing.solver import Linear_solver
 from mats_l2_processing.parameters import get_updated_conf
 
 
-def nested_VER_1D(conf, const, metadata, obs_files, rt_data, prefix, processes=1):
+def multicol_3D_apr_from_1D(conf, const, metadata, obs_files, rt_data, grid_3d, prefix, processes=1):
+    if len(conf.COLS_1D_APR) == 1:
+        col = conf.COLS_1D_APR[0]
+        ver_1d, grid_1d = nested_VER_1D(conf, const, metadata, obs_files, rt_data, prefix,
+                                        processes=processes, column=col)
+        ver_2d = init_3D_from_1D(grid_3d, grid_1d, ver_1d, metadata[0])
+        return np.broadcast_to(ver_2d[:, np.newaxis, :], tuple([len(x) for x in grid_3d.points])), [ver_1d], [grid_1d]
+    else:
+        col_step = const.NOMINAL_SWATH / (metadata[0]["NCOL"][0] - 1)
+        col_pos = - 0.5 * const.NOMINAL_SWATH + np.array(conf.COLS_1D_APR) * col_step
+        across_grid = grid_3d.points[1] * grid_3d.ref_rad * 1e-3
+        col_idx = [np.argmin(np.abs(across_grid - pos)) for pos in col_pos]
+
+        slices, raw_ver, g1d = [], [], []
+        for cid in col_idx:
+            ver_1d, grid_1d = nested_VER_1D(conf, const, metadata, obs_files, rt_data, prefix,
+                                            processes=processes, column=cid)
+            raw_ver.append(ver_1d)
+            g1d.append(grid_1d)
+            slices.append(init_3D_from_1D(grid_3d, grid_1d, ver_1d, metadata[0]))
+
+        slices = np.stack(slices, axis=1)
+        f = interp1d(col_idx, slices, axis=1, kind=conf.ACROSS_INTERP_1D_APR, bounds_error=False,
+                     fill_value='extrapolate')
+        res = f(np.arange(len(grid_3d.points[1])))
+        return res, raw_ver, g1d
+
+
+def nested_VER_1D(conf, const, metadata, obs_files, rt_data, prefix, processes=1, column=None):
 
     # Create an updated configuration for 1D retrieval
-    column = int(np.floor(metadata[0]["NCOL"][0] / 2))
+    if column is None:
+        column = int(np.floor(metadata[0]["NCOL"][0] / 2))
+
     vars_1D = {"RET_QTY": ["VER"],
                "SCALES": [1e4],
                "BOUNDS": [(0, 2e8)],
@@ -105,7 +135,8 @@ def init_3D_from_1D(grid_3d, grid_1d, ver_1d, metadata, fill='side_mean', side_r
                           bounds_error=False)
         res[i, :] = interp(grid_3d.points[2])
 
-    return np.broadcast_to(res[:, np.newaxis, :], tuple([len(x) for x in grid_3d.points]))
+    # return np.broadcast_to(res[:, np.newaxis, :], tuple([len(x) for x in grid_3d.points]))
+    return res
 
 
 def compensate_curvature(grid, metadata, qtys):

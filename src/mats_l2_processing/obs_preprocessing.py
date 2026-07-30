@@ -401,6 +401,7 @@ def deghost(imgs, ghost_strength, offset_pix=None, offset_angle=None, pix_pitch=
         offset = offset_angle / np.mean(np.diff(deg_map[:, : , 1], axis=0))
     else:
         raise ValueError("Specify offset_pix OR offset_angle and pix_pitch OR offset_angle and deg map.")
+    breakpoint()
 
     offset_int = int(np.floor(np.abs(offset)))
     offset_frac = np.abs(offset) - offset_int

@@ -14,7 +14,8 @@ from mats_l2_processing.grid_3d import Alt_along_3D_grid
 from mats_l2_processing.solver import Lavenberg_marquardt_solver
 from mats_l2_processing.forward_model import Forward_model_temp_abs
 from mats_l2_processing.regularisation import Sa_inv_multivariate
-from mats_l2_processing.nested import nested_VER_1D, init_3D_from_1D
+# from mats_l2_processing.nested import nested_VER_1D, init_3D_from_1D
+from mats_l2_processing.nested import multicol_3D_apr_from_1D
 from mats_l2_processing.plotting import plot_apr_from_1d
 
 
@@ -72,14 +73,16 @@ def main():
     grid = Alt_along_3D_grid(metadata, conf, const, processes=args.processes, verify=args.verify_grid)
 
     logging.info("Performing 1D linear VER retrieval to set VER a priori...")
-    ver_1d, grid_1d = nested_VER_1D(conf, const, metadata, obs_files, rt_data, args.prefix, processes=args.processes)
-    ver_from_1d = init_3D_from_1D(grid, grid_1d, ver_1d, metadata[0])
+    # ver_1d, grid_1d = nested_VER_1D(conf, const, metadata, obs_files, rt_data, args.prefix, processes=args.processes)
+    # ver_from_1d = init_3D_from_1D(grid, grid_1d, ver_1d, metadata[0])
+    ver_from_1d, raw_ver, grids_1d = multicol_3D_apr_from_1D(conf, const, metadata, obs_files, rt_data, grid,
+                                                             args.prefix, processes=args.processes)
 
     logging.info("Initializing atmospheric quantities...")
     gridded = gridded_data(conf.GRIDDED_PRE, extend_previous={"VER_from_1D": ver_from_1d}, from_grid=grid).data
     atm_apr = [gridded["VER_apr"], gridded["T_apr"]]
     if args.apr_diag_plots:
-        plot_apr_from_1d(grid_1d, ver_1d, grid, ver_from_1d, gridded=gridded)
+        plot_apr_from_1d(grids_1d, raw_ver, grid, ver_from_1d, gridded=gridded)
 
     out_fname = f"{args.prefix}_L2.nc"
     grid.write_grid_ncdf(out_fname)

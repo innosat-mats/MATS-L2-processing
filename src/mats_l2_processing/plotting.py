@@ -108,11 +108,15 @@ def plot_slice(coords, data, slice_axis, pos, **kwargs):
     plot_2d(dcoords[plot_coord_idx[0]], dcoords[plot_coord_idx[1]], pdata.T, **kwargs)
 
 
-def plot_apr_from_1d(grid_1d, ver_1d, grid, ver_from_1d, gridded=None):
+def plot_apr_from_1d(grids_1d, vers_1d, grid, ver_from_1d, gridded=None):
+    num_slices = len(grids_1d)
+    assert len(vers_1d) == num_slices
+
     eff_rad_km = geoid_radius(np.mean(grid.lat)) * 1e-3 + 80
     cid = int(np.floor(len(grid.points[1]) / 2))
-    plot_2d(grid_1d.img_time - grid_1d.img_time[0], grid_1d.points[0] * 1e-3, ver_1d, fname="1d_ver_raw",
-            xlabel="Exposure time, s", ylabel="Altitude, km")
+    for i in range(num_slices):
+        plot_2d(grids_1d[i].img_time - grids_1d[i].img_time[0], grids_1d[i].points[0] * 1e-3, vers_1d[i],
+                fname=f"1d_ver_raw_{i}", xlabel="Exposure time, s", ylabel="Altitude, km")
     plot_2d(grid.points[2] * eff_rad_km, grid.points[0] * 1e-3, ver_from_1d[:, cid, :].T, fname="1d_ver_interp",
             xlabel="Exposure time, s", ylabel="Altitude, km")
     if gridded is not None:
