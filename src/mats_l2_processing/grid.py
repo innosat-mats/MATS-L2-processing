@@ -22,6 +22,7 @@ class Grid(ABC):
         # Main grid attributes
         self.points = None
         self.rows, self.columns = get_row_col(conf, metadata)
+        self.conf = conf
 
         # self.ecef_to_local = None
         self.stepsize = conf.STEP_SIZE
@@ -46,6 +47,7 @@ class Grid(ABC):
         self.ncpar = const.ncpar
 
         self.alt = None
+        self.store_tp_pos = conf.STORE_TP_POS
 
     def _set_derived(self, metadata, processes, combine_images, verify):
         # self.centers = [center_grid(g) for g in self.edges]
@@ -139,14 +141,38 @@ class Grid(ABC):
         gridl = np.stack([np.array([points[0], points[-1]]) for points in self.points])
 
         ndims = len(self.points)
+        self.los_len = 400
 
         pos = multiprocess(self.calc_los_image, metadata, self.fwdm_vars, processes, [])
+        tp_pos = []
+        tp_los = []
+        los_len = 400
+
+        def pad_los(los, max_length):
+            res = np.full((max_length,) + los.shape[1:], np.nan)
+            if los.shape[0] > max_length:
+                res = los[:max_length, ...]
+            else:
+                res[:len(los), ...] = los
+            return res
+
         for los in unnest(pos):
             minmax[:, 0] = [np.minimum(minmax[i, 0], np.min(los[:, i])) for i in range(ndims)]
             minmax[:, 1] = [np.maximum(minmax[i, 1], np.max(los[:, i])) for i in range(ndims)]
+            tp_pos.append(min(los, key=lambda x: x[0]))
+            tp_los.append(pad_los(los, self.los_len))
+
+        if self.store_tp_pos:
+            self.tp_pos = (np.array(tp_pos) - self.offsets[..., :]) / self.scalings[..., :]
+            self.tp_los = (np.array(tp_los) - self.offsets[..., :]) / self.scalings[..., :]
 
         minmax, gridl = [(arr - self.offsets[:, np.newaxis]) / self.scalings[:, np.newaxis] for arr in [minmax, gridl]]
+
+        minmax[0, 0] = np.maximum(minmax[0, 0], (self.conf.TP_ALT_RANGE[0] + self.offsets[0]) * self.scalings[0])
+        minmax[0, 1] = np.minimum(minmax[0, 1], (self.conf.TP_ALT_RANGE[1] + self.offsets[0]) * self.scalings[0])
         logging.info("Grid verification:")
+        # logging.info((self.conf.TP_ALT_RANGE[0] + self.offsets[0]) * self.scalings[0])
+        # logging.info((self.conf.TP_ALT_RANGE[1] + self.offsets[0]) * self.scalings[0])
         for i in range(ndims):
             logging.info(f"Dimension {i}: grid {gridl[i, 0]:.3e} to {gridl[i, 1]:.3e}," +
                          f" los {minmax[i, 0]:.3e} to {minmax[i, 1]:.3e}.")

@@ -70,7 +70,8 @@ def main():
     rt_data = {name: rt_data[name].copy() for name in ["filters", "sigma", "emission", "sigma_grad", "emission_grad"]}
 
     logging.info("Initializing geometry...")
-    grid = Alt_along_3D_grid(metadata, conf, const, processes=args.processes, verify=args.verify_grid)
+    verify = args.verify_grid or conf.STORE_TP_POS
+    grid = Alt_along_3D_grid(metadata, conf, const, processes=args.processes, verify=verify)
 
     logging.info("Performing 1D linear VER retrieval to set VER a priori...")
     # ver_1d, grid_1d = nested_VER_1D(conf, const, metadata, obs_files, rt_data, args.prefix, processes=args.processes)
@@ -80,9 +81,10 @@ def main():
 
     logging.info("Initializing atmospheric quantities...")
     gridded = gridded_data(conf.GRIDDED_PRE, extend_previous={"VER_from_1D": ver_from_1d}, from_grid=grid).data
-    atm_apr = [gridded["VER_apr"], gridded["T_apr"]]
+    atm_apr = [gridded[f"{v}_apr"] for v in conf.RET_QTY]
+    aux_data = [gridded[v] for v in conf.AUX_QTY]
     if args.apr_diag_plots:
-        plot_apr_from_1d(grids_1d, raw_ver, grid, ver_from_1d, gridded=gridded)
+        plot_apr_from_1d(grids_1d, raw_ver, grid, ver_from_1d, conf, gridded=gridded, all_cols=True)
 
     out_fname = f"{args.prefix}_L2.nc"
     grid.write_grid_ncdf(out_fname)
@@ -92,7 +94,7 @@ def main():
 
     logging.info("Initializing forward model...")
     obs = Obs(grid, metadata, conf, const, args.processes)
-    fwdm = Forward_model_temp_abs(conf, const, grid, obs, [gridded["O2"]], rt_data, combine_images=True)
+    fwdm = Forward_model_temp_abs(conf, const, grid, obs, aux_data, rt_data, combine_images=True)
 
     logging.info("Initializing inverse model...")
     obs_data = obs.prepare_obs_data(conf, obs_files)
@@ -104,7 +106,9 @@ def main():
                                         var_scales=None, exp_alt_axis=conf.EXP_ALT_AXIS)
 
     obs_size = len(obs_data.flatten())
-    Se_inv = sp.diags(np.ones((obs_size)), 0).astype('float32') / (conf.RAD_SCALE ** 2 * len(fwdm.channels))
+    # diag = np.concatenate([np.full(int(obs_size / 2), v) for v in [0.01, 1]])  # IR2 only
+    diag = np.ones((obs_size))
+    Se_inv = sp.diags(diag, 0).astype('float32') / (conf.RAD_SCALE ** 2 * len(fwdm.channels))
 
     invm = Lavenberg_marquardt_solver(fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, args.prefix, Sa_terms=terms,
                                       save_jac=args.save_jacobian, load_jac=args.load_jacobian)
