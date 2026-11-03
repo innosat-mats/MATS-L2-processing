@@ -3,7 +3,7 @@ import netCDF4 as nc
 import argparse
 
 from mats_l2_processing import parameters
-from mats_l2_processing.io import read_L1_ncdf, add_ncdf_vars
+from mats_l2_processing.io import read_L1_ncdf, add_ncdf_vars, append_gen_ncdf
 from mats_l2_processing.obs_preprocessing import jpg_fail_proxy, subtract_top_median, hot_pix_trans_masks, fill_invalid
 
 
@@ -40,10 +40,16 @@ def main():
     add_ncdf_vars(args.file, "TPlon", [("jpg_fail", "JPG compression failure flag for each image",
                                         jpgf > conf.JPG_FAIL_THRESHOLD)], units=[("jpgf_proxy", "")])
 
-    if conf.SUB_TOP_CONF["strategy"] is not None:
+    if conf.SUB_TOP_CONF["cols"] is not None:
         img, medians = subtract_top_median(img, mdata["TPheightPixel"], conf.SUB_TOP_ALT_RANGE, conf=conf.SUB_TOP_CONF)
-        add_ncdf_vars(args.file, "TPlon", [("sub_top_value", "Subtracted radiance (based on top of img.)", medians)],
-                      units=[("sub_top_value", "photon nanometer-1 meter-2 steradian-1 second-1")])
+        # add_ncdf_vars(args.file, "TPlon", [("sub_top_value", "Subtracted radiance (based on top of img.)", medians)],
+        #               units=[("sub_top_value", "photon nanometer-1 meter-2 steradian-1 second-1")])
+
+        # median_dims = ("time", "im_col") if len(medians.shape) == 2 else ("time")
+        out_spec = {"sub_top_value": ("Top of image value that has been subtracted from the image",
+                                      "photon nanometer-1 meter-2 steradian-1 second-1", medians, ("time", "im_col"))}
+        append_gen_ncdf(args.file, out_spec, overwrite=True)
+
     with nc.Dataset(args.file, 'r+') as nf:
         nf["ImageCalibrated"][:] = img
 

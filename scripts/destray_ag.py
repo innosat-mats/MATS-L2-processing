@@ -83,7 +83,7 @@ def main():
 
     # Remove stray light
     if conf.SEP_IRB_DESTRAY:
-        irb_ch = {"IR1": "IR4", "IR2": "IR3"}
+        irb_ch = {"IR1": "IR3", "IR2": "IR3"}
         destrayed = ird[chns[0]]["ImageCalibrated"][valid, :, :] * recal[chns[0]] - r_contrib[irb_ch[chns[0]]]
     else:
         destrayed = ird[chns[0]]["ImageCalibrated"][valid, :, :] * recal[chns[0]] - 0.5 * (r_contrib["IR3"] + r_contrib["IR4"])
