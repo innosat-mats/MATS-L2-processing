@@ -53,6 +53,7 @@ def apr_from_1D(geo, geo3d, ver_1D, along_dists, decay_range=None, hw=4):
 
 class gridded_data():
     def __init__(self, spec, extend_previous={}, from_grid=None, from_L2_ncdf=None, ncdf_preload=None):
+        self.dummy_time_dim = False
         if not ((from_grid is None) ^ (from_L2_ncdf is None)):
             raise ValueError("gridded_data requires either grid or L2 ncdf file for initialization!")
         self.data = extend_previous.copy()
@@ -64,19 +65,33 @@ class gridded_data():
             self.valid_time = from_grid.valid_time
         if from_L2_ncdf is not None:
             with nc.Dataset(from_L2_ncdf, 'r') as nf:
-                self.alt = nf["alt"][:]
-                self.lat = nf["lat"][:]
-                self.lon = nf["lon"][:]
+                self.alt = nf["altitude"][:]
+                self.lat = nf["latitude"][:]
+                self.lon = nf["longitude"][:]
                 self.valid_time = nf["time"][0]
-                self.points = [nf[coord_name][:] for coord_name in nf["alt"].dimensions]
+                self.points = [nf[coord_name][:] for coord_name in nf["altitude"].dimensions]
+                num_dims = len(self.points)
+                if num_dims > 3:
+                    if num_dims == 4 and len(self.points[0]) == 1:
+                        self.dummy_time_dim = True
+                        self.points = self.points[1:]
+                        for var in ncdf_preload:
+                            self.data[var] = nf[var][0, ...]
+                    else:
+                        raise ValueError("Input data has too many dimensions!")
+                else:
+                    for var in ncdf_preload:
+                        self.data[var] = nf[var][:]
+
                 self.ncdf_file = from_L2_ncdf
-                for var in ncdf_preload:
-                    self.data[var] = nf[var][:]
+
         self.shape = self.alt.shape
+        print(self.data.keys())
 
         methods = {"L2": self._L2, "jawara": self._model, "msis": self._model,
                    "running_mean": self._running_mean, "savgol": self._savgol, "gaussian": self._gaussian,
                    "fill": self._fill, "eval": self._eval, "alt_taper": self._alt_taper}
+        self.out_vars = []
         for names, method, gargs in spec:
             if method in methods.keys():
                 output = methods[method](method, gargs)
@@ -87,6 +102,10 @@ class gridded_data():
                                  f"to set {names}, but {len(output)} variables were generated.")
             for name, out in zip(names, output):
                 self.data[name] = out
+
+        if self.dummy_time_dim:
+            for name, v in self.data.items():
+                self.data[name] = v[np.newaxis, ...]
 
     def _verify_arguments(self, method, gargs, needed):
         for key in needed:
@@ -162,7 +181,7 @@ class gridded_data():
             for i in range(res.shape[0]):
                 for j in range(res.shape[2]):
                     res[i, :, j] = running_mean(res[i, :, j], hw[1])
-        if hw[1] > 0:
+        if hw[2] > 0:
             for i in range(res.shape[1]):
                 for j in range(res.shape[2]):
                     res[:, i, j] = running_mean(res[:, i, j], hw[2])
@@ -179,8 +198,8 @@ class gridded_data():
             #     raise ValueError("Invalid Savitzky-Golay filter specification!")
             for d in range(ndims):
                 if gargs["polyorder"][d] > 0:
-                    data = savgol_filter(data, gargs["width"][d], gargs["polyorder"][d], axis=d)
-            res.append(data)
+                    smooth = savgol_filter(data, gargs["width"][d], gargs["polyorder"][d], axis=d)
+            res.append(data - smooth if gargs.get("residual", False) else smooth)
         return res
 
     def _gaussian(self, method, gargs):

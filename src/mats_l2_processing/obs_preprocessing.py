@@ -1,36 +1,30 @@
 import numpy as np
-import netCDF4 as nc
-import datetime as DT
-from bisect import bisect
+# import netCDF4 as nc
+# import datetime as DT
+# from bisect import bisect
 import logging
+# import time
 from scipy.spatial.transform import Rotation as R
-from scipy.interpolate import RectBivariateSpline, interpn, LinearNDInterpolator, CloughTocher2DInterpolator
+from scipy.interpolate import RectBivariateSpline, interpn, CloughTocher2DInterpolator
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import deconvolve
 from scipy.optimize import curve_fit
 from scipy.ndimage import binary_erosion
+# from sklearn import linear_model
 
 # from mats_l1_processing.pointing import pix_deg
-from mats_l2_processing.pointing import Pointing
-from mats_l2_processing.util import get_image, multiprocess, DT2seconds
-
-
-#def get_deg_map(image):
-#    dmap = np.zeros((image["NCOL"] + 1, image["NROW"], 2))
-#    for i in range(dmap.shape[0]):
-#        for j in range(dmap.shape[1]):
-#            dmap[i, j, :] = pix_deg(image, i, j)
-#    return dmap
+from mats_l2_processing.util import multiprocess
+from mats_l2_processing.obs_tools import ndshift
 
 
 def time_offsets(times):
     # Check temporal alignement, remove images from the beginning if necessary to align
     numtimes = len(times)
     stimes = []
-    for chn, time in enumerate(times):
-        stimes.append(time)
+    for chn, t in enumerate(times):
+        stimes.append(t)
         if chn == 0:
-            dt = np.median(np.diff(time))
+            dt = np.median(np.diff(t))
             numimg = len(stimes[-1])
         else:
             numimg = np.minimum(numimg, len(stimes[-1]))
@@ -131,7 +125,7 @@ def reinterpolate3(data, deg_maps, cm, destray=[]):
         image_var = "ImageDestrayed" if destray[chn - 1] else "ImageCalibrated"
         # x, y = [deg_maps[chn][:, :, i].flatten() for i in range(2)]
         print(f"Interpolating channel {chn}/{len(deg_maps)}, {numimg} images")
-        #cmf = np.flip(cm, axis=-1)
+        # cmf = np.flip(cm, axis=-1)
         # cms = np.swapaxes(cmf[chn, :, :, :], 0, 1)
         for im in range(numimg):
             # print(f"Image {im + 1}/{numimg}")
@@ -140,9 +134,11 @@ def reinterpolate3(data, deg_maps, cm, destray=[]):
             # #                                 np.swapaxes(cmf[chn, :, :, :], 0, 1),
             #                                 method='linear', bounds_error=False, fill_value=0)
             ip = CloughTocher2DInterpolator(deg_maps[chn].reshape(-1, 2), data[chn][image_var][im, ...].flatten(),
-                                      fill_value=np.nan)
-            res[chn - 1, im, :, :] = ip(cm[chn, :, :, 0].flatten(), cm[chn, :, :, 1].flatten()).reshape(deg_maps[0].shape[:-1])
-            # ip = RBFInterpolator(deg_maps[chn].reshape(-1, 2), data[chn][image_var][im, ...].flatten(), neighbors=50, kernel="cubic")
+                                            fill_value=np.nan)
+            res[chn - 1, im, :, :] = ip(cm[chn, :, :, 0].flatten(),
+                                        cm[chn, :, :, 1].flatten()).reshape(deg_maps[0].shape[:-1])
+            # ip = RBFInterpolator(deg_maps[chn].reshape(-1, 2), data[chn][image_var][im, ...].flatten(), neighbors=50,
+            #                      kernel="cubic")
             # res[chn - 1, im, :, :] = ip(cm[chn, ...].reshape(-1, 2)).reshape(deg_maps[0].shape[:-1])
     return edge_fix(res)
 
@@ -247,76 +243,6 @@ def remove_background_sep(ir1, ir2, ir3, ir4, recal=None):
     return ir1c * 3.57, ir2c * 8.16
 
 
-def ndshift(data, offset, axis):
-    shape = list(data.shape)
-    size = shape[axis]
-    res = data.copy()
-    if offset == 0:
-        return res
-    pshape = shape.copy()
-    if offset > 0:
-        pshape[axis] = offset
-        res = np.concatenate([np.take(data, indices=np.arange(offset, size), axis=axis), np.full(pshape, np.nan)],
-                             axis=axis)
-    else:
-        pshape[axis] = - offset
-        res = np.concatenate([np.full(pshape, np.nan), np.take(data, indices=np.arange(size + offset), axis=axis)],
-                             axis=axis)
-    return res
-
-
-def ndshift_sym(data, offset, axis):
-    shape = list(data.shape)
-    size = shape[axis]
-    res = data.copy()
-    if offset == 0:
-        return res
-    elif offset > 0:
-        idx = np.arange(2 * offset, size)
-    else:
-        idx = np.arange(size + 2 * offset)
-
-    pshape = shape.copy()
-    pshape[axis] = np.abs(offset)
-
-    return np.concatenate([np.full(pshape, np.nan), np.take(data, indices=idx, axis=axis), np.full(pshape, np.nan)],
-                          axis=axis)
-
-
-def gen_neighborhood(data, ranges, force_sym=False):
-    shiftf = ndshift_sym if force_sym else ndshift
-    ndims = len(data.shape)
-    assert len(ranges) == ndims, "Must have one interval in ranges for each data dimension!"
-    idxs = [arr.flatten() for arr in np.meshgrid(*ranges, indexing='ij')]
-    
-    numn = len(idxs[0])
-    for n in range(numn):
-        if all([idxs[d][n] == 0 for d in range(ndims)]):
-            numn -= 1
-            for d in range(ndims):
-                idxs[d] = np.delete(idxs[d], n)
-            break
-
-    res = np.empty(data.shape + (numn,))
-    for n in range(numn):
-        copy = data.copy()
-        for d in range(ndims):
-            copy = shiftf(copy, idxs[d][n], d)
-        res[..., n] = copy
-
-    return res
-
-
-def denoise(data, hws, thr):
-    assert len(data.shape) == len(hws), "Need one half-width per data dimension"
-    ranges = [np.arange(-hw, hw + 1) for hw in hws]
-    neighb = gen_neighborhood(data, ranges)
-    median = np.nanmedian(neighb, axis=-1)
-    pass_1 = np.where(np.abs(data - median) > thr * np.nanstd(neighb, axis=-1), median, data)
-    neighb = gen_neighborhood(pass_1, ranges)
-    return np.where(np.abs(data - median) > thr * np.nanstd(neighb, axis=-1), median, data)
-
-
 def separate_scattered_stray(im, ref_rows, bot_row, scale_height, valid=None,
                              residual_treatment='smooth', sigma=5):
     if valid is None:
@@ -365,11 +291,6 @@ def separate_scattered_stray(im, ref_rows, bot_row, scale_height, valid=None,
     return scat_fit, rayleigh_fit  # , scat_fit_og, rayleigh_fit_og
 
 
-def nd_running_mean(data, hw, axis=0):
-    shifted = np.stack([ndshift(data, p, axis) for p in np.arange(-hw, hw + 1)], axis=0)
-    return np.nanmean(shifted, axis=0)
-
-
 def find_images(ref_times, aux_times, thr=3.1, valid_ref=None, valid_aux=None):
     if valid_ref is None:
         valid_ref = np.ones_like(ref_times)
@@ -398,9 +319,10 @@ def deghost(imgs, ghost_strength, offset_pix=None, offset_angle=None, pix_pitch=
     elif (offset_angle is not None) and (pix_pitch is not None):
         offset = offset_angle / pix_pitch
     elif (offset_angle is not None) and (deg_map is not None):
-        offset = offset_angle / np.mean(np.diff(deg_map[:, : , 1], axis=0))
+        offset = offset_angle / np.mean(np.diff(deg_map[:, :, 1], axis=0))
     else:
         raise ValueError("Specify offset_pix OR offset_angle and pix_pitch OR offset_angle and deg map.")
+    breakpoint()
 
     offset_int = int(np.floor(np.abs(offset)))
     offset_frac = np.abs(offset) - offset_int
@@ -494,26 +416,16 @@ def extract_bit(calib_errors, bit, flip=False):
         return res
 
 
-def fill_invalid(data, invalid, ranges=[(0,), (-2, -1, 0, 1, 2), (-2, -1, 0, 1, 2)], outlier_filter=None):
-    neighbours = gen_neighborhood(data, ranges, force_sym=True)
-    medians = np.nanmedian(neighbours, axis=-1)
-    medians[:, 0, 0] = medians[:, 0, 1]
-    medians[:, 0, -1] = medians[:, 0, -2]
-    medians[:, -1, 0] = medians[:, -1, 1]
-    medians[:, -1, -1] = medians[:, -1, -2]
-
-    if outlier_filter is not None:
-        outliers = np.nanstd(neighbours, axis=-1) * outlier_filter < np.abs(data - medians)
-        invalid = np.logical_or(invalid, outliers)
-
-    return np.where(invalid, medians, data), invalid
-
-
 def layer_sim_factor(top, thickness, h):
     Re = 6371
     rh2 = (Re + h) ** 2
     res = np.sqrt((Re + top + thickness) ** 2 - rh2) - np.sqrt((Re + top) ** 2 - rh2)
     return np.minimum(res / np.sqrt(thickness * (2 * Re + 2 * top + thickness)), 1.0)
+
+
+def nd_running_mean(data, hw, axis=0):
+    shifted = np.stack([ndshift(data, p, axis) for p in np.arange(-hw, hw + 1)], axis=0)
+    return np.nanmean(shifted, axis=0)
 
 
 def subtract_top_median(data, tph, ref_alt_range, conf={"rows": "constant", "cols": "constant"}):
@@ -535,21 +447,3 @@ def subtract_top_median(data, tph, ref_alt_range, conf={"rows": "constant", "col
     if conf["rows"] == "layer_sim":
         return data - layer_sim_factor(ref_alt_range[1], conf["thickness"], tph) *\
             medians[:, np.newaxis, np.newaxis], medians
-
-
-def hot_pix_trans_masks(hot_pix_file, channel, threshold, img_times):
-    hpdata = np.load(hot_pix_file)
-
-    # Determine which mask to use for which image
-    dts = np.array([DT2seconds(DT.datetime.fromisoformat(t).replace(tzinfo=DT.timezone.utc))
-                    for t in hpdata[f"{channel}_datetimes"]])
-    idxs = np.array([bisect(dts, t) for t in img_times])
-    if (idxs == 0).any() or (idxs == len(dts)).any():
-        raise ValueError("Some images are outside the time range covered by the hot pixel map!")
-    idxs = idxs - 1
-
-    # Generate masks themselves
-    hmaps = hpdata[channel].astype(float)
-    masks = np.abs(hmaps[1:, :, :] - hmaps[:-1, :, :]) > threshold
-
-    return masks, idxs

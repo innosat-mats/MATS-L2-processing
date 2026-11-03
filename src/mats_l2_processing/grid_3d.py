@@ -194,11 +194,24 @@ class Alt_along_3D_grid(Grid):
         dims_4D = ("time", "alt_coord", "acrosstrack_coord", "alongtrack_coord")
         # dims_2D = ("acrosstrack_coord", "alongtrack_coord")
 
+
         # Define coordinate variables
         ncvars = {"altitude": ("Altitude", "meter", self.alt, dims_4D),  # For compatibility with old scripts
                   "longitude": ("Longitude", "degree_east", self.lon, dims_4D),
                   "latitude": ("Latitude", "degree_north", self.lat, dims_4D)}
                  # "TPheight": ("Tangent point height", "meter", self.TP_heights, ("img_time", "img_col", "img_row"))}
+
+        if self.store_tp_pos:
+            tp_pos_shape = (len(self.img_time), len(self.columns), len(self.rows), 3)
+            dim_pars["tp_coord"] = ("LOS point number", "meter", np.array(list(range(3))))
+            dim_pars["los_point"] = ("Tangent point coordinate", "meter", np.array(list(range(self.los_len))))
+
+            ncvars["tp_coords"] = ("Tangent point coordinate, alt x acrosstrack x alongtrack", "meter",
+                       self.tp_pos.reshape(tp_pos_shape) * 1e3, ("img_time", "img_col", "img_row", "tp_coord"))
+            ncvars["los"] = ("Line of sight point coordinates, alt x acrosstrack x alongtrack", "meter",
+                             self.tp_los.reshape(tp_pos_shape[:3] + (self.los_len, 3)) * 1e3,
+                                ("img_time", "img_col", "img_row", "los_point", "tp_coord"))
+            self.tp_los = None  # Varianble no longer needed, but requires a lot of memory!
 
         write_gen_ncdf(fname, dim_pars, ncvars, attributes)
 
@@ -232,6 +245,17 @@ class Alt_along_3D_grid(Grid):
                  # "TPheight": ("Tangent point height", "meter", self.TP_heights, ("img_time", "img_col", "img_row"))}
         if track_width is not None:
             ncvars["track_width"] = ("Acrosstrack width of valid data region", "meter", track_width, ("img_time"))
+
+        if self.store_tp_pos:
+            tp_pos_shape = (len(self.img_time), len(self.columns), len(self.rows), 3)
+            dim_pars["tp_coord"] = ("LOS point number", "meter", np.array(list(range(3))))
+            dim_pars["los_point"] = ("Tangent point coordinate", "meter", np.array(list(range(self.los_len))))
+
+            ncvars["tp_coords"] = ("Tangent point coordinate, alt x acrosstrack x alongtrack", "meter",
+                                   self.tp_pos.reshape(tp_pos_shape) * 1e3, ("img_time", "img_col", "img_row", "tp_coord"))
+            ncvars["los"] = ("Line of sight point coordinates, alt x acrosstrack x alongtrack", "meter",
+                             self.tp_los.reshape(tp_pos_shape[:3] + (self.los_len, 3)) * 1e3,
+                                                 ("img_time", "img_col", "img_row", "los_point", "tp_coord"))
 
         write_gen_ncdf(fname, dim_pars, ncvars, attributes)
 

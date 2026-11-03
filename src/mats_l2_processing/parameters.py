@@ -14,7 +14,7 @@ def make_conf(conf_type, conf_file, args):
                     "STEP_SIZE", "COL_RANGE", "ROW_RANGE", "RT_DATA_FILE", "GRIDDED_PRE", "NCDF_OBS_FACTOR",
                     "STRICT_ALONGTRACK", "CENTRAL_COLUMN"] + CG_VARS
     LM_VARS = ["LM_IT_MAX", "LM_PAR_0", "LM_FAC", "LM_MAX_FACTS_PER_ITER", "CONV_CRITERION"]
-    APR_1D_VARS = ["SA_WEIGHTS_1D_APR", "CHANNEL_1D_APR", "MEDCOLS_1D_APR", "GRIDDED_PRE_1D"]
+    APR_1D_VARS = ["SA_WEIGHTS_1D_APR", "CHANNELS_1D_APR", "COLS_1D_APR", "GRIDDED_PRE_1D", "ACROSS_INTERP_1D_APR"]
 
     # NCDF parameters: (<long name>,  <unit>)
     ncpar = {"IR1": ("Infrared image channel 1", "ph/cm^2/s/srad"),
@@ -30,16 +30,17 @@ def make_conf(conf_type, conf_file, args):
     # Various approximate constants for simple estimations needed in the code
     SAT_SPEED_APPROX = 7.55  # km/s
     MEAN_EARTH_RADIUS = 6371008.8   # m
+    NOMINAL_SWATH = 225  # km
 
     # -------------------------------------------------------------------------------------------------------------
 
     # Configuration for temperature iterative solver
     const["iter_T"] = {"NEEDED_DATA": CCD_VARS + ATT_VARS + TP_VARS, "TP_VARS": CCD_VARS + ATT_VARS, "ncpar": ncpar,
                        "POINTING_DATA": ATT_VARS + CCD_VARS, "sat_speed_approx": SAT_SPEED_APPROX, "NOMINAL_IMG_STEP": 6,
-                       "MEAN_EARTH_RADIUS": MEAN_EARTH_RADIUS}
+                       "MEAN_EARTH_RADIUS": MEAN_EARTH_RADIUS, "NOMINAL_SWATH": NOMINAL_SWATH}
     req["iter_T"] = ['ALT_GRID', 'ALONG_GRID', 'ACROSS_GRID', "ASPECT_RATIO", "SEP_CHN_LOS", "OBS_SRC_VAR",
                      "DISTORTION_CORRECTION", "DISTORTION_DATA", "GEOLOCATE_1D_FROM_TP", "TOMO_PADDING_IMG",
-                     "EXP_ALT_AXIS", "CALC_TRANSMISSIVITY"] + GEN_RET_VARS + LM_VARS + APR_1D_VARS
+                     "EXP_ALT_AXIS", "CALC_TRANSMISSIVITY", "STORE_TP_POS"] + GEN_RET_VARS + LM_VARS + APR_1D_VARS
 
     # Configuration for grid calculation
     const["grid"] = {"NEEDED_DATA": CCD_VARS + ATT_VARS + TP_VARS, "TP_VARS": CCD_VARS + ATT_VARS,
@@ -87,7 +88,7 @@ def make_conf(conf_type, conf_file, args):
     const["L1b_preproc_dark"] = {"PREPROC_VARS": ["ImageCalibrated", "TPheightPixel", "channel"]}
 
     # Configuration for data post-processing
-    req["post"] = ["GRIDDED_POST", "GRID_TYPE"]
+    req["post"] = ["GRIDDED_POST", "RET_QTY", "AUX_QTY"]
 
     # Dummy conf
     req["deg_map"] = ["CHANNELS", "DISTORTION_CORRECTION", "SEP_CHN_LOS", "DISTORTION_DATA", 'DEG_WRT_SAT_AXIS']
@@ -130,8 +131,8 @@ def make_conf(conf_type, conf_file, args):
                 'TOMO_DEFAULT_DURATION': 660,
                 'TOMO_MIN_DURATION': 500,
                 'TOMO_MIN_OVERLAP': 50,
-                "CHANNEL_1D_APR": "IR2c",
-                "MEDCOLS_1D_APR": 5,
+                "CHANNELS_1D_APR": ["IR2"],
+                "COLS_1D_APR": [22],
                 "INTERPOLATOR": "LINEAR",
                 "NCDF_OBS_FACTOR": 1.0,
                 "PREPROC_OBS_FACTOR": 1e12,
@@ -163,10 +164,16 @@ def make_conf(conf_type, conf_file, args):
                 "OUTLIER_FILTER_SIGMAS": 4,
                 "HPIX_TRANS_THRESHOLD": 15,
                 "CALC_TRANSMISSIVITY": False,
+                "ACROSS_INTERP_1D_APR": 'linear',
+                "GRIDDED_POST": [],
+                "STORE_TP_POS": False,
                 }
 
+    conf_ns = {}
     if conf_file is not None:
-        exec(open(conf_file).read())
+        # exec(open(conf_file).read())
+        with open(conf_file) as f:
+            exec(f.read(), globals(), conf_ns)
     if (conf_type not in req.keys()) and (conf_type not in const.keys()):
         raise ValueError(f"Unknown configuration type {conf_type}!")
     constants = const[conf_type] if conf_type in const.keys() else {}
@@ -175,7 +182,7 @@ def make_conf(conf_type, conf_file, args):
         vargs = vars(args)
     except Exception:
         vargs = {}
-    pars = (vargs, dict(globals(), **locals()), defaults)
+    pars = (vargs, {**globals(), **conf_ns, **locals()}, defaults)
     # else:
     #    pars = (dict(globals(), **locals()), defaults)
     conf = set_vars(req[conf_type], pars) if conf_type in req.keys() else {}

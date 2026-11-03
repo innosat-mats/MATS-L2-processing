@@ -108,20 +108,32 @@ def plot_slice(coords, data, slice_axis, pos, **kwargs):
     plot_2d(dcoords[plot_coord_idx[0]], dcoords[plot_coord_idx[1]], pdata.T, **kwargs)
 
 
-def plot_apr_from_1d(grid_1d, ver_1d, grid, ver_from_1d, gridded=None):
+def plot_apr_from_1d(grids_1d, vers_1d, grid, ver_from_1d, conf, gridded=None, all_cols=False):
+    num_slices = len(grids_1d)
+    assert len(vers_1d) == num_slices
+
     eff_rad_km = geoid_radius(np.mean(grid.lat)) * 1e-3 + 80
-    cid = int(np.floor(len(grid.points[1]) / 2))
-    plot_2d(grid_1d.img_time - grid_1d.img_time[0], grid_1d.points[0] * 1e-3, ver_1d, fname="1d_ver_raw",
-            xlabel="Exposure time, s", ylabel="Altitude, km")
-    plot_2d(grid.points[2] * eff_rad_km, grid.points[0] * 1e-3, ver_from_1d[:, cid, :].T, fname="1d_ver_interp",
-            xlabel="Exposure time, s", ylabel="Altitude, km")
-    if gridded is not None:
-        plot_2d(grid.points[2] * eff_rad_km, grid.points[0] * 1e-3, gridded["VER_apr"][:, cid, :].T,
-                fname="1d_ver_apr", xlabel="Exposure time, s", ylabel="Altitude, km")
-        plot_2d(grid.points[2] * eff_rad_km, grid.points[0] * 1e-3, gridded["T_apr"][:, cid, :].T,
-                fname="1d_t_apr", xlabel="Exposure time, s", ylabel="Altitude, km")
-        plot_2d(grid.points[2] * eff_rad_km, grid.points[0] * 1e-3, gridded["jawara_T"][:, cid, :].T,
-                fname="1d_t_jawara", xlabel="Exposure time, s", ylabel="Altitude, km")
+
+    if all_cols:
+        ncols = conf.COL_RANGE[1] - conf.COL_RANGE[0]
+        pos = np.array(conf.COLS_1D_APR) / ncols * len(grid.points[1])
+        cids = [int(np.floor(p)) for p in pos]
+    else:
+        cids = [int(np.floor(len(grid.points[1]) / 2))]
+
+    for i in range(num_slices):
+        plot_2d(grids_1d[i].img_time - grids_1d[i].img_time[0], grids_1d[i].points[0] * 1e-3, vers_1d[i],
+                fname=f"1d_ver_raw_{i}", xlabel="Exposure time, s", ylabel="Altitude, km")
+    for cid in cids:
+        plot_2d(grid.points[2] * eff_rad_km, grid.points[0] * 1e-3, ver_from_1d[:, cid, :].T,
+                fname=f"1d_ver_interp_{cid}", xlabel="Exposure time, s", ylabel="Altitude, km")
+        if gridded is not None:
+            plot_2d(grid.points[2] * eff_rad_km, grid.points[0] * 1e-3, gridded["VER_apr"][:, cid, :].T,
+                    fname=f"1d_ver_apr_{cid}", xlabel="Exposure time, s", ylabel="Altitude, km")
+            plot_2d(grid.points[2] * eff_rad_km, grid.points[0] * 1e-3, gridded["T_apr"][:, cid, :].T,
+                    fname=f"1d_t_apr_{cid}", xlabel="Exposure time, s", ylabel="Altitude, km")
+            plot_2d(grid.points[2] * eff_rad_km, grid.points[0] * 1e-3, gridded["jawara_T"][:, cid, :].T,
+                    fname=f"1d_t_jawara_{cid}", xlabel="Exposure time, s", ylabel="Altitude, km")
 
 
 def quick_curves(curves, xlabel=None, ylabel=None, xdata=None, ofile=None, title=None,
@@ -188,11 +200,13 @@ def plot_histogram(arrays, xlabel=None, ylabel=None, ofile=None, title=None, nbi
     for name, data in arrays.items():
         if type(data) is dict:
             pdata = data["data"]
+            weights = data.get("weights", None)
             if "groups" in data.keys():
                 col_idx, style_idx = data["groups"]
         else:
             pdata = data
-        vals, edges = np.histogram(pdata, bins=bins)
+            weights = None
+        vals, edges = np.histogram(pdata, bins=bins, weights=weights)
         if density:
             vals = vals / vals.sum()
         if cumulative:
@@ -214,3 +228,57 @@ def plot_histogram(arrays, xlabel=None, ylabel=None, ofile=None, title=None, nbi
     else:
         plt.savefig(f"{ofile}.png", dpi=400)
     plt.close()
+
+
+def plot_scatter(groups, xlabel=None, ylabel=None, fname=None, title=None, extent=None):
+    plt.figure()
+    legend, cbar = False, False
+    for g in groups:
+        if "hexbin" in g.keys() and g["hexbin"]:
+            vmin, vmax = g.get("vrange", [None, None])
+            plot = plt.hexbin(g["x"].flatten(), g["y"].flatten(), cmap=g.get("cmap", "inferno"),
+                              vmin=vmin, vmax=vmax, extent=extent)
+            cbar = True
+            if "color_data" in g.keys():
+                raise ValueError("hexbin and color_data options are incompatible. Only one can be used for one group.")
+        else:
+            if extent is None:
+                ext = [None, None, None, None]
+            else:
+                ext = extent
+
+            valid = []
+            for j, name in enumerate(["x", "y"]):
+                if ext[2 * j] is None or ext[2 * j + 1] is None:
+                    valid.append(np.ones_like(g[name].flatten(), dtype='bool'))
+                else:
+                    valid.append(np.logical_and(g[name] > ext[2 * j], g[name] < ext[2 * j + 1]).flatten())
+            valid = np.logical_and(valid[0], valid[1])
+
+            kwargs = {"marker": g.get("marker", "."), "s": g.get("size", 0.5), "alpha": g.get("alpha", 1.0)}
+            if "color_data" in g.keys():
+                kwargs["c"] = g["color_data"]
+                kwargs["cmap"] = g.get("cmap", "inferno")
+                cbar = True
+            else:
+                kwargs["label"] = g["label"]
+                legend = True
+
+            plot = plt.scatter(g["x"].flatten()[valid], g["y"].flatten()[valid], **kwargs)
+        if cbar:
+            plt.colorbar(plot, label=g["label"])
+
+    plt.grid()
+    if legend:
+        plt.legend()
+    if title is not None:
+        plt.title(title)
+    if xlabel is not None:
+        plt.xlabel(xlabel)
+    if ylabel is not None:
+        plt.ylabel(ylabel)
+
+    if fname is None:
+        plt.show()
+    else:
+        plt.savefig(fname, dpi=400)

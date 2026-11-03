@@ -49,7 +49,7 @@ def read_L1_ncdf(filename, var=None, start_img=None, stop_img=None, start_time=N
             time_origin = DT.datetime(2000, 1, 1, 0, 0, tzinfo=DT.timezone.utc)
             time_step = 1e-9
         else:
-            ValueError(f"Invalid time variable {time_var}!")
+            raise ValueError(f"Invalid time variable {time_var}!")
 
         time = time_origin + (time_step * tdata[:]) * DT.timedelta(0, 1)
         if (start_img is not None) or (stop_img is not None):
@@ -164,7 +164,6 @@ def write_ncdf_L1b_zarr_format(pdata, outfile, channel, version, extra_vars=None
             ncvar[:] = np.arange(size)
 
         # Set the values for variables that need special handling
-        breakpoint()
         special_variables = {"time": ((pdata["EXPDate"].to_numpy().astype(np.datetime64) - np.datetime64("2000-01-01T00:00:00.0")) / np.timedelta64(1, "s") * 1e9).astype(np.int64),
                              "CalibrationErrors": np.stack([np.stack(pdata["CalibrationErrors"][i], axis=0)
                                                            for i in range(len(pdata["CalibrationErrors"]))], axis=0),
@@ -199,7 +198,7 @@ def write_ncdf_L1b_zarr_format(pdata, outfile, channel, version, extra_vars=None
             ncvar.units = info["units"]
 
 
-def write_ncdf_L1(pdata, outfile, channel, version, image=True, var=None, level="1b"):
+def write_ncdf_L1(pdata, outfile, channel, version, image=True, var=None, level="1b", consistent_shapes=True):
     if level == "1a":
         imName = "IMAGE"
         calErrors = False
@@ -219,17 +218,26 @@ def write_ncdf_L1(pdata, outfile, channel, version, image=True, var=None, level=
 
         # Create dimensions and their corresponding variables
         # Dimension variable parameters: (<len of variable>, <long name>, <dimension unlimited>)
+        if consistent_shapes:
+            ncol, nrow = pdata["NCOL"][0] + 1, pdata["NROW"][0]
+        else:
+            ncol, nrow = 2048, 511  # If shapes are inconsistent, all images are "unbinned" to full frame
+            calErrors = False
+
         params = {"num_images": (num_images, "Image number", True),
-                  "im_col": (pdata["NCOL"][0] + 1, "Column number", False),
-                  "im_row": (pdata["NROW"][0], "Row number", False)}
+                  "im_col": (ncol, "Column number", False),
+                  "im_row": (nrow, "Row number", False)}
         for dim, param in params.items():
             nf.createDimension(dim, None if param[2] else param[0])
             ncdf_create_var(np.arange(param[0]), nf, dim, (dim, ), np.int16, long_name=param[1])
 
-        # Create variable for ImageCalibrated
+        # Create variable for IMAGE/ImageCalibrated
         if image:
-            ncdf_create_var(np.stack(pdata[imName].to_numpy(), axis=0),
-                            nf, imName, ("num_images", "im_row", "im_col"), np.float32)
+            if consistent_shapes:
+                img_to_write = np.stack(pdata[imName].to_numpy(), axis=0)
+            else:
+                img_to_write = unbin(pdata, imName)
+            ncdf_create_var(img_to_write, nf, imName, ("num_images", "im_row", "im_col"), np.float32)
 
         # Create variable for CalibrationErrors
         if calErrors:
@@ -255,7 +263,11 @@ def write_ncdf_L1(pdata, outfile, channel, version, image=True, var=None, level=
         for var in all_vars:
             if var not in handled_vars:
                 data = pdata[var].to_numpy()
-                ncdf_create_var(data, nf, var, ("num_images", ), type(data.flat[0]))
+                try:
+                    ncdf_create_var(data, nf, var, ("num_images", ), type(data.flat[0]))
+                except NotImplementedError as e:
+                    print(f"Skipped variable {var} due to the following error:")
+                    print(e)
 
 
 def ncdf_create_var(data, dset, name, dims, dtype, long_name=None, units=None):
@@ -276,7 +288,7 @@ def ncdf_create_var(data, dset, name, dims, dtype, long_name=None, units=None):
         ncvar[:] = data
     elif type_id == 'timestamp':
         ncvar = dset.createVariable(name, 'f8', dims)
-        ncvar.units = "seconds since 2000.01.01 00:00 UTC"
+        ncvar.units = "Seconds since 2000.01.01 00:00 UTC"
         if dtype == np.datetime64:
             ncvar[:] = (data - np.datetime64("2000-01-01 00:00:00.0")) / np.timedelta64(1, "s")
         else:
@@ -307,6 +319,39 @@ def ncdf_create_var(data, dset, name, dims, dtype, long_name=None, units=None):
     if units is not None:
         ncvar.units = units
     return ncvar
+
+
+def unbin(pdata, imName):
+    fcols, frows = 2048, 511
+    res_shape = (len(pdata), frows, fcols)
+    res = np.zeros(res_shape)  # All images are unbinned to a full frame
+
+    for i in range(len(pdata)):
+        mdata = pdata.loc[i]
+        ncols, nrows = mdata["NCOL"] + 1, mdata["NROW"]
+        if (ncols, nrows) == (fcols, frows):
+            res[i, :, :] = mdata[imName]
+        else:
+            # if mdata['channel'] in ["IR1", "IR3", "UV1", "UV2"]:
+            # x_full = np.floor(mdata["NCOL"] - (fcols - np.arange(fcols) - mdata["NCSKIP"]) / mdata["NCBINCCDColumns"])
+            #    x_full = np.floor((np.arange(fcols - 1, -1, -1) - mdata["NCSKIP"]) / mdata["NCBINCCDColumns"])
+            # else:
+            x_full = np.floor((np.arange(fcols) - mdata["NCSKIP"]) / mdata["NCBINCCDColumns"])
+            y_full = np.floor((np.arange(frows) - mdata["NRSKIP"]) / mdata["NRBIN"])
+
+            x_valid = np.logical_and(x_full >= 0, x_full < ncols)
+            y_valid = np.logical_and(y_full >= 0, y_full < nrows)
+            valid = np.minimum(*np.meshgrid(x_valid, y_valid, indexing='ij'))
+            x_full, y_full = [np.where(good, arr, 0).astype(np.int_)
+                              for arr, good in [(x_full, x_valid), (y_full, y_valid)]]
+            xx_full, yy_full = np.meshgrid(x_full, y_full, indexing='ij')
+            bin_size = mdata["NCBINCCDColumns"] * mdata["NRBIN"]
+            res[i, :, :] = np.where(valid.T, mdata[imName][yy_full.T, xx_full.T] / bin_size, np.nan)
+
+            #if ncols < 2000:
+            #    breakpoint()
+
+    return res
 
 
 def read_multi_ncdf(files, var, offsets=None, numimg=None):
