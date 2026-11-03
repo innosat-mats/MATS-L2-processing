@@ -8,6 +8,7 @@ from mats_utils.rawdata.read_data import store_as_parquet
 import argparse
 import numpy as np
 import datetime as DT
+from collections import Counter
 
 
 def get_args():
@@ -33,7 +34,13 @@ def get_args():
     parser.add_argument("--release", type=str,
                         help="Make a release-type ncdf with the specified release version.")
     parser.add_argument("--parquet_out", type=str, help="Output file name (parquet)")
-
+    parser.add_argument("--img_shape_handling", type=str,
+                        choices=["most_common", "get_shape", "all", "exclude_shape", "rare"], default="most_common",
+                        help="Inconsistent shape handling strategy. 'all' and 'exclude_shape' need --rebin_to.")
+    parser.add_argument("--img_shape", type=int, nargs=2,
+                        help="Image shape, needed if --img_shape_handling is 'get_shape' or 'exclude_shape'.")
+    parser.add_argument("--rebin_to", type=int, nargs=2,
+                        help="Re-bins images to specified shape. Required when keeping images of inconsistent shape.")
     parser.add_argument("--meta", action="store_true", help="Do not store images themselves, just metadata.")
     parser.add_argument("-t", action="store_true", help="Calculate tangent point coordinates for every pixel.")
     parser.add_argument("--dist_data", type=str, default="/home/lk/L2_data/distortion_splines_tck.nc",
@@ -45,6 +52,52 @@ def get_args():
 def tp_calc_wrapper(image, common_args):
     image["time"] = image["EXPDate"].to_pydatetime()
     return faster_heights(image, None, full_coords=True, deg_map=common_args[0], cols=np.arange(image['NCOL'] + 1))
+
+
+def filter_img_sizes(df, args):
+    img_names = {"1a": "IMAGE", "1b": "ImageCalibrated"}
+    img_name = img_names[args.level]
+    strategy = args.img_shape_handling
+    shape = None if args.img_shape is None else tuple(args.img_shape)
+    shapes = [df[img_name][i].shape for i in range(len(df))]
+    counted_shapes = Counter(shapes)
+    inconsistent_shapes = len(counted_shapes) > 1
+    if inconsistent_shapes:
+        print("Warning: images in selected time interval are of inconsistent shape! The shapes are:")
+        print(dict(counted_shapes))
+
+
+    if strategy == "all":
+        return df, not inconsistent_shapes
+    if strategy == "most_common":
+        if inconsistent_shapes:
+            sel_shapes = [max(counted_shapes, key=counted_shapes.get)]
+            reason = "the most common"
+        else:
+            return df, True
+    elif strategy == "get_shape":
+        if shape is None:
+            raise ValueError("--img_shape must be given when --img_shape_handling is 'get_shape'")
+        sel_shapes = [shape]
+        reason = "the specified"
+    elif strategy == "exclude_shape":
+        if shape is None:
+            raise ValueError("--img_shape must be given when --img_shape_handling is 'exclude_shape'")
+        sel_shapes = list(counted_shapes.keys())
+        if shape in sel_shapes:
+            sel_shapes.remove(shape)
+        reason = "all but the specified"
+    elif strategy == "rare":
+        sel_shapes = [s for s, count in dict(counted_shapes).items() if count < 100]
+        reason = "all images of uncommon"
+        shape = ""
+
+    if len(sel_shapes) == 0:
+        raise ValueError("No images left after image shape filtering!")
+
+    res = df.loc[[s in sel_shapes for s in shapes]].reset_index(drop=True)
+    print(f"Selected {reason} shape {shape} ({len(res)} images).")
+    return res, not inconsistent_shapes
 
 
 def main():
@@ -68,6 +121,7 @@ def main():
 
             dftop = read_MATS_data(DT.datetime(*conf.START_TIME), DT.datetime(*conf.STOP_TIME),
                                    filt, level=args.level, version=conf.VERSION)
+            dftop, img_shapes_consistent = filter_img_sizes(dftop, args)
 
     if args.parquet_out:
         store_as_parquet(dftop, f"{args.parquet_out}.parquet.gzip")
@@ -78,7 +132,7 @@ def main():
         # else:
         #     write_ncdf_L1(dftop, args.ncdf_out, conf.CHANNEL, conf.VERSION, image=not args.meta, level=args.level)
         if args.ncdf_out is None:
-            ofile = f"L1b_{conf.CHANNEL}"
+            ofile = f"L{args.level}_{conf.CHANNEL}"
             if args.START_TIME:
                 dates = ["_".join([str(x) for x in array]) for array in [args.START_TIME, args.STOP_TIME]]
                 ofile += f"-{'-'.join(dates)}"
@@ -87,7 +141,8 @@ def main():
             ofile = args.ncdf_out
 
         if args.ncdf_format == "all_vars" or args.level == "1a":
-            write_ncdf_L1(dftop, ofile, conf.CHANNEL, args.VERSION, image=not args.meta, level=args.level)
+            write_ncdf_L1(dftop, ofile, conf.CHANNEL, args.VERSION, image=not args.meta, level=args.level,
+                          consistent_shapes=img_shapes_consistent)
         else:
             if args.t:
                 variables = ["EXPDate", "afsAttitudeState", "afsGnssStateJ2000", "NCSKIP", "NRSKIP", "NCOL", "NROW",
