@@ -43,8 +43,8 @@ def get_args():
                         help="Do not calculate regularisation diagnostics.")
     parser.add_argument("--verify_grid", action="store_true",
                         help="Compute all LOS before doing anything else, to ensure they fit into grid.")
-    parser.add_argument("--save_jacobian", action="store_true",
-                        help="Save first iteration jacobian as .npy archive. This may need 2 GB of disk space or more!")
+    parser.add_argument("--save_jacobian", type=str, choices=["none", "first", "last"], default="none",
+                        help="Save jacobian as .npy archive. Can save first or last iteration.")
     parser.add_argument("--load_jacobian", action="store_true",
                         help="Load first iteration jacobian from a file. Overrides --save_jacobian.")
     parser.add_argument("--debug_nan", action="store_true",

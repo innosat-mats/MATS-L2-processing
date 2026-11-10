@@ -67,6 +67,8 @@ class Obs(ABC):
                                             obs_data[i, :, :, :], dims)
         append_gen_ncdf(fname, ncvars, attributes=attributes)
 
+
+
     def write_TPheights_ncdf(self, fname):
         ncvars = {}
         dims = ("img_time", "img_col", "img_row")
@@ -80,3 +82,7 @@ def get_row_col(conf, metadata):
     row_range = (0, metadata["NROW"][0]) if conf.ROW_RANGE[0] < 0 else conf.ROW_RANGE
     columns, rows = [np.arange(r[0], r[1], 1) for r in [conf.COL_RANGE, row_range]]
     return rows, columns
+
+
+def obs_data_from_L2_ncdf(ncdf_data, channels, obs_suffix=""):
+    return np.stack([ncdf_data[f"{chn}{obs_suffix}"] for chn in channels], axis=0)

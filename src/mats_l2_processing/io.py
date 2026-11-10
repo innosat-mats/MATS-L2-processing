@@ -119,8 +119,24 @@ def write_gen_ncdf(fname, dim_spec, var_spec, attributes):
             nf.setncatts(attributes)
 
 
-def append_gen_ncdf(fname, var_spec, attributes={}, overwrite=False):
+def append_gen_ncdf(fname, var_spec, dim_spec={}, attributes={}, overwrite=False):
     with nc.Dataset(fname, 'r+') as nf:
+        # Create new dimensions and dimension variables
+        for dim, spec in dim_spec.items():
+            if dim in nf.dimensions:
+                old_len = len(nf.dimensions[dim])
+                if len(spec[2]) == old_len:
+                    continue
+                else:
+                    raise ValueError(f"Dimension {dim} already exists and has length {old_len}," +
+                                     f"but trying to set length {len(spec[2])}. Abort!")
+            nf.createDimension(dim, len(spec[2]))
+            ncvar = nf.createVariable(dim, 'f8', (dim,))
+            ncvar.long_name = spec[0]
+            if spec[1] is not None:
+                ncvar.units = spec[1]
+            ncvar[:] = spec[2]
+
         for var, spec in var_spec.items():
             if var in nf.variables:
                 if overwrite:

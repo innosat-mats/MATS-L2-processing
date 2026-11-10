@@ -31,6 +31,7 @@ class Alt_along_3D_grid(Grid):
             self.offsets = np.zeros(3)
             self.points = [self._set_points(name, conf, const, lims=lims[i], scaling=self.scalings[i], offset=self.offsets[i])
                            for i, name in enumerate(["ALT_GRID", "ACROSS_GRID", "ALONG_GRID"])]
+            self.dim_names = ("alt_coord", "acrosstrack_coord", "alongtrack_coord")
             if conf.STRICT_ALONGTRACK:
                 tp_track = calc_track_ecef(metadata, self.pointing.chn_map(conf.CHANNELS[0]), processes, const.TP_VARS,
                                            c_col=conf.CENTRAL_COLUMN, ny=10, ref_alt=self.ref_alt)
@@ -280,6 +281,9 @@ class Alt_along_3D_grid(Grid):
             ncvars[f"{qty}{atm_suffix}"] = (f"{self.ncpar[qty][0]}{atm_suffix_long}", self.ncpar[qty][1], atm[i],
                                             dims)
         append_gen_ncdf(fname, ncvars)
+
+    def atm_from_L2_ncdf(self, data, atm_suffix=""):
+        return [data[f"{qty}{atm_suffix}"] for qty in self.ret_qty]
 
     def interpolate_from_3D(self, ext_coords, ext_data):
         # Prepare coordinates
