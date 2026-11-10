@@ -15,6 +15,7 @@ def make_conf(conf_type, conf_file, args):
                     "STRICT_ALONGTRACK", "CENTRAL_COLUMN"] + CG_VARS
     LM_VARS = ["LM_IT_MAX", "LM_PAR_0", "LM_FAC", "LM_MAX_FACTS_PER_ITER", "CONV_CRITERION"]
     APR_1D_VARS = ["SA_WEIGHTS_1D_APR", "CHANNELS_1D_APR", "COLS_1D_APR", "GRIDDED_PRE_1D", "ACROSS_INTERP_1D_APR"]
+    DIAG_VARS = ["DIAG_QTY", "DIAG_POINTS", "DIAG_STATS", "DIAG_CG_RTOL"]
 
     # NCDF parameters: (<long name>,  <unit>)
     ncpar = {"IR1": ("Infrared image channel 1", "ph/cm^2/s/srad"),
@@ -41,6 +42,9 @@ def make_conf(conf_type, conf_file, args):
     req["iter_T"] = ['ALT_GRID', 'ALONG_GRID', 'ACROSS_GRID', "ASPECT_RATIO", "SEP_CHN_LOS", "OBS_SRC_VAR",
                      "DISTORTION_CORRECTION", "DISTORTION_DATA", "GEOLOCATE_1D_FROM_TP", "TOMO_PADDING_IMG",
                      "EXP_ALT_AXIS", "CALC_TRANSMISSIVITY", "STORE_TP_POS"] + GEN_RET_VARS + LM_VARS + APR_1D_VARS
+
+    const["diag"] = const["iter_T"]
+    req["diag"] = req["iter_T"] + DIAG_VARS
 
     # Configuration for grid calculation
     const["grid"] = {"NEEDED_DATA": CCD_VARS + ATT_VARS + TP_VARS, "TP_VARS": CCD_VARS + ATT_VARS,
@@ -167,6 +171,7 @@ def make_conf(conf_type, conf_file, args):
                 "ACROSS_INTERP_1D_APR": 'linear',
                 "GRIDDED_POST": [],
                 "STORE_TP_POS": False,
+                "DIAG_CG_RTOL": 1e-4,
                 }
 
     conf_ns = {}

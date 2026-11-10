@@ -129,11 +129,12 @@ class Linear_solver(Solver):
 
 
 class Lavenberg_marquardt_solver(Solver):
-    def __init__(self, fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, fname,
-                 save_jac=False, load_jac=False, Sa_terms=None, init_ncdf=False):
+    def __init__(self, fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, fname, save_first_jac=False,
+                 save_jac="none", load_jac=False, Sa_terms=None, init_ncdf=False):
         super().__init__(fwdm, obs_data, conf, Sa_inv, Se_inv, atm_apr, Sa_terms)
         self.prefix = fname
-        self.save_jac = save_jac
+        self.save_first_jac = (save_jac == 'first')
+        self.save_last_jac = (save_jac == 'last')
         self.load_jac = load_jac
         self.atm_apr = atm_apr
         self.conf = conf
@@ -215,7 +216,7 @@ class Lavenberg_marquardt_solver(Solver):
                          f"T gradiant sum: {obs_test_vec.T @ K @ Temp_test_vec}")
         else:
             K, fxp = self.fwdm.calc_fwdm_jac(self.atm_apr, nproc)
-        if self.save_jac:
+        if self.save_first_jac:
             sp.save_npz(f"{self.prefix}_1_K.npz", K)
             with open(f"{self.prefix}_1_fxp.npz", 'wb') as f:
                 np.save(f, fxp)
@@ -270,4 +271,8 @@ class Lavenberg_marquardt_solver(Solver):
                             break
                         logging.info("Convergence reached!" if converged else "Max. number of iterations reached!")
                         logging.info(f"Total LM run time: {time.time() - lm_start_time} s.")
+                        if self.save_last_jac:
+                            sp.save_npz(f"{self.prefix}_last_K.npz", K)
+                            with open(f"{self.prefix}_last_fxp.npz", 'wb') as f:
+                                np.save(f, fxp)
                         return

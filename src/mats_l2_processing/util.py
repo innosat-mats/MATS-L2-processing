@@ -3,7 +3,7 @@ from multiprocessing import Pool
 import numpy as np
 from itertools import chain, repeat
 from scipy.sparse import coo_matrix
-
+from threadpoolctl import threadpool_limits
 
 def get_filter(channel):
     filters = {"IR1": 1, "IR2": 4, "IR3": 3, "IR4": 2, "UV1": 5, "UV2": 6, "all": -1, "NADIR": 7}
@@ -58,8 +58,9 @@ def multiprocess(func, dataset, image_args, nproc, common_args, unzip=False, sta
         #         res.append(func(image))
     else:  # Actual multiprocessing
         # if len(common_args) > 0:
-        with Pool(processes=nproc) as pool:
-            res = pool.starmap(func, zip(images, repeat(common_args)))
+        with threadpool_limits(limits=1, user_api='blas'):
+            with Pool(processes=nproc) as pool:
+                res = pool.starmap(func, zip(images, repeat(common_args)))
         # else:
         #     with Pool(processes=nproc) as pool:
         #         res = pool.starmap(func, images)

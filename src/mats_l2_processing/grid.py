@@ -49,6 +49,9 @@ class Grid(ABC):
         self.alt = None
         self.store_tp_pos = conf.STORE_TP_POS
 
+        # Misc info about grid
+        self.dim_names = None
+
     def _set_derived(self, metadata, processes, combine_images, verify):
         # self.centers = [center_grid(g) for g in self.edges]
         dims = np.array([len(x) for x in self.points])
@@ -74,6 +77,8 @@ class Grid(ABC):
 
         if verify:
             self.verify(metadata, processes)
+
+        self.idx_factors = [np.prod(dims[s + 1:len(dims)]) for s in range(len(dims))]
 
     def calc_los_image(self, image, common_args):
         # tic = time.time()
@@ -183,12 +188,17 @@ class Grid(ABC):
         else:
             raise ValueError("LOS outside grid found! Abort")
 
-    def vec2atm(self, vec):
-        return [vec[i * self.all_points:(i + 1) * self.all_points].reshape(self.atm_shape[1:]) * self.scales[i]
+    def vec2atm(self, vec, custom_scales=None):
+        scales = self.scales if custom_scales is None else custom_scales
+        return [vec[i * self.all_points:(i + 1) * self.all_points].reshape(self.atm_shape[1:]) * scales[i]
                 for i in range(len(self.ret_qty))]
 
-    def atm2vec(self, atm):
-        return np.concatenate([atm[i].flatten() / self.scales[i] for i in range(len(atm))])
+    def atm2vec(self, atm, custom_scales=None):
+        scales = self.scales if custom_scales is None else custom_scales
+        return np.concatenate([atm[i].flatten() / scales[i] for i in range(len(atm))])
+
+    def vec_idx(self, qty_idx, grid_idx):
+        return qty_idx * self.npoints + np.sum(self.idx_factors * grid_idx)
 
     def get_imvec(self, vec, num_im):
         return np.concatenate([vec[self.all_points * j + self.npoints * num_im:
